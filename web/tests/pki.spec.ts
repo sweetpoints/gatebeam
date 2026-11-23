@@ -1,0 +1,84 @@
+import { test, expect } from '@playwright/test';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { createHmac } from 'node:crypto';
+import { connect } from 'node:tls';
+import { execFileSync } from 'node:child_process';
+const fixture=JSON.parse(readFileSync(process.env.GATEBEAM_WEB_FIXTURE!,'utf8'));
+function code(offset=0){let bits='';for(const c of new URL(fixture.enrollment.provisioning_uri).searchParams.get('secret')!)bits+='ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'.indexOf(c).toString(2).padStart(5,'0');const bytes=Buffer.from((bits.match(/.{8}/g)||[]).map(v=>parseInt(v,2))),counter=Buffer.alloc(8);counter.writeBigUInt64BE(BigInt(Math.floor(Date.now()/30000)+offset));const h=createHmac('sha1',bytes).update(counter).digest(),n=h[h.length-1]!&15;return((h.readUInt32BE(n)&0x7fffffff)%1000000).toString().padStart(6,'0')}
+// The owned worker action has a 10-second deadline; observe its receipt after it finishes.
+const workerObservationTimeout=12000;
+let seq=0;
+async function action(kind:string,id='',revision=0){const request=++seq;writeFileSync(fixture.workerCommand,JSON.stringify({Action:kind,ID:id,Request:request,Revision:revision}),{mode:0o600});await expect.poll(()=>{try{return JSON.parse(readFileSync(fixture.workerResult,'utf8')).request}catch{return 0}},{timeout:workerObservationTimeout}).toBe(request);return JSON.parse(readFileSync(fixture.workerResult,'utf8'))}
+async function nativeSerial(){const [host,port]=fixture.edgeTLSAddress.split(':');return new Promise<string>((resolve,reject)=>{const socket=connect({host,port:Number(port),servername:'entry.owned.test',ca:fixture.trustPEM,timeout:2000},()=>{const serial=socket.getPeerCertificate().serialNumber;socket.end();resolve(serial.toLowerCase().replace(/^0+/,''))});socket.on('timeout',()=>{socket.destroy();reject(new Error('owned native TLS timeout'))});socket.on('error',reject)})}
+test('真实 API / 标准 CA 客户端 / 原生网关：版本、权限和一次性 EAB',async({page,context})=>{
+ console.log(`PKI browser: ${context.browser()?.version()}`);
+ await page.goto('/enroll');await page.getByLabel('一次性绑定资料').fill(JSON.stringify(fixture.enrollment));await page.getByRole('button',{name:'读取绑定资料'}).click();await page.getByLabel('设置密码').fill(fixture.password);await page.getByLabel('动态验证码',{exact:true}).fill(code());await page.getByRole('button',{name:'完成绑定'}).click();await page.getByRole('button',{name:'已保存，关闭并登录'}).click();await page.getByLabel('账号',{exact:true}).fill(fixture.name);await page.getByLabel('密码',{exact:true}).fill(fixture.password);await page.getByRole('button',{name:'继续验证'}).click();await page.getByLabel('动态验证码',{exact:true}).fill(code(1));
+ // Observe the real authentication response before the five-second UI
+ // assertion. The application still aborts its request after ten seconds;
+ // rejected authentication must fail here rather than look like missing UI.
+ const loginStarted=performance.now();
+ const loginResponse=page.waitForResponse(r=>new URL(r.url()).pathname==='/auth/login/finish'&&r.request().method()==='POST',{timeout:10000});
+ await page.getByRole('button',{name:'登录',exact:true}).click();
+ const authenticated=await loginResponse;
+ console.log(`PKI login response: status=${authenticated.status()} click_to_response_ms=${Math.round(performance.now()-loginStarted)}`);
+ expect(authenticated.status()).toBe(200);
+ await expect(page.getByRole('heading',{name:'会话概览'})).toBeVisible();
+ const headers=async()=>({Origin:fixture.origin,'X-CSRF-Token':(await page.evaluate(()=>sessionStorage.getItem('gatebeam.csrf')))!});
+ expect((await page.request.get('/certificates/spec')).status()).toBe(200);
+ await page.getByRole('link',{name:'内部身份',exact:true}).click();await page.getByLabel('身份 DNS 名称（每行一个）').fill('entry.owned.test');await page.getByLabel('身份授权到期').fill(new Date(Date.now()+86400000).toISOString().slice(0,16));await action('mfa');await page.getByLabel('身份操作动态验证码').fill(code());await page.getByRole('button',{name:'提交人工授权'}).click();await expect(page.getByRole('status')).toContainText('身份授权已提交');
+ const enrollment=(await(await page.request.get('/pki/management')).json()).enrollments[0];
+ await action('mfa');await page.getByLabel('身份操作动态验证码').fill(code());const eabResponse=page.waitForResponse(r=>r.url().endsWith('/eab')&&r.request().method()==='POST');await page.getByRole('button',{name:'创建/替换一次性 EAB'}).click();const eab=await(await eabResponse).json();await expect(page.getByTestId('one-time-eab')).toBeVisible();expect((await page.request.get('/pki/management')).headers()['cache-control']).toContain('no-store');expect(JSON.stringify(await(await page.request.get('/pki/management')).json()).includes(eab.hmac)).toBe(false);
+ await page.getByRole('button',{name:'已保存，清除一次性 EAB'}).click();await expect(page.getByTestId('one-time-eab')).toHaveCount(0);
+ await page.getByRole('link',{name:'凭据管理',exact:true}).click();const accountPanel=page.getByTestId('resources-account');await accountPanel.getByRole('button',{name:'新建CA 账号'}).click();await accountPanel.getByLabel('CA 机构').selectOption('internal-server');await accountPanel.getByLabel('联系邮箱').fill('owned@example.test');await accountPanel.getByLabel('EAB Key ID',{exact:true}).fill(eab.kid);await accountPanel.getByLabel('新 EAB HMAC（仅提交，不回显）').fill(eab.hmac);await action('mfa');await accountPanel.getByLabel('操作动态验证码').fill(code());await accountPanel.getByRole('button',{name:'创建并启用准备'}).click();await expect(accountPanel.getByRole('status')).toContainText('已保存并启用');const account=(await(await page.request.get('/certificates/account')).json()).items[0];
+ const credentialPanel=page.getByTestId('resources-credential');for(const zone of ['entry.owned.test','other.owned.test']){await credentialPanel.getByRole('button',{name:'新建Cloudflare DNS 凭据'}).click();await credentialPanel.getByLabel('Cloudflare Zone ID').fill(zone.startsWith('entry')?'a'.repeat(32):'b'.repeat(32));await credentialPanel.getByLabel('区域域名').fill(zone);await credentialPanel.getByLabel('新 Cloudflare API Token').fill('owned-fixture-token-'+zone);await action('mfa');await credentialPanel.getByLabel('操作动态验证码').fill(code());await credentialPanel.getByRole('button',{name:'创建并启用准备'}).click();await expect(credentialPanel.getByRole('status')).toContainText('已保存并启用')}
+ const credentialJSON=await(await page.request.get('/certificates/credential')).text();expect(JSON.parse(credentialJSON).items.length).toBe(2);expect(credentialJSON.includes('owned-fixture-token')).toBe(false);expect((await(await page.request.get('/certificates/account')).text()).includes(eab.hmac)).toBe(false);
+ await page.getByRole('link',{name:'证书管理',exact:true}).click();await expect(page.getByText('准备与生效分别确认')).toBeVisible();
+ // A full-document pagehide must clear unsubmitted imports even when Vue is
+ // preserved by bfcache; then exercise a real document navigation round trip.
+ const importKey=()=>page.getByLabel('私钥 PEM（仅提交）');
+ const importCode=()=>page.getByLabel('导入动态验证码');
+ await importKey().fill('owned-unsubmitted-key-fixture');await importCode().fill('123456');
+ await page.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true})));
+ await expect(importKey()).toHaveValue('');await expect(importCode()).toHaveValue('');
+ await importKey().fill('owned-navigation-key-fixture');await importCode().fill('123456');
+ await page.goto('/console/credentials');await page.goBack();
+ await expect(importKey()).toHaveValue('');await expect(importCode()).toHaveValue('');
+ await page.getByLabel('导入规格 ID').fill('00000000-0000-4000-8000-000000000001');
+ await page.getByLabel('证书链 PEM').fill('owned-invalid-chain-fixture');await importKey().fill('owned-invalid-key-fixture');
+ await action('mfa');await importCode().fill(code());
+ const rejectedImport=page.waitForResponse(r=>r.url().endsWith('/import')&&r.request().method()==='POST');
+ await page.getByRole('button',{name:'提交导入并清除秘密'}).click();expect((await rejectedImport).ok()).toBe(false);
+ await expect(importKey()).toHaveValue('');await expect(importCode()).toHaveValue('');await expect(page.getByLabel('证书链 PEM')).toHaveValue('');
+ const trustPanel=page.getByTestId('resources-trust');await trustPanel.getByRole('button',{name:'新建信任包'}).click();await trustPanel.getByLabel('信任用途').selectOption('serverAuth');await trustPanel.getByLabel('信任 PEM').fill(fixture.trustPEM);await trustPanel.getByLabel('受信状态配置名称').fill('owned-unconfigured-status');await action('mfa');await trustPanel.getByLabel('操作动态验证码').fill(code());await trustPanel.getByRole('button',{name:'创建并启用准备'}).click();await expect(trustPanel.getByRole('status')).toContainText('已保存并启用');const trust=(await(await page.request.get('/certificates/trust')).json()).items[0];
+ const specPanel=page.getByTestId('resources-spec');await specPanel.getByRole('button',{name:'新建证书规格'}).click();await specPanel.getByLabel('证书名称（每行一个 DNS 名）').fill('entry.owned.test');await specPanel.getByLabel('CA 账号').selectOption(account.id);await specPanel.getByLabel('信任包').selectOption(trust.id);await action('mfa');await specPanel.getByLabel('操作动态验证码').fill(code());await specPanel.getByRole('button',{name:'创建并启用准备'}).click();await expect(specPanel.getByRole('status')).toContainText('已保存并启用');let spec=(await(await page.request.get('/certificates/spec')).json()).items[0];expect(spec.lifecycle.current_version).toBeUndefined();
+ const preparation=await action('prepare');expect(preparation.failed).toBe(true);const trustState=await(await page.request.get('/certificates/trust/'+trust.id)).json();expect(trustState.lifecycle.preparation_failures).toBe(1);await trustPanel.getByRole('button',{name:'刷新信任包'}).click();await expect(trustPanel.getByTestId('resource-'+trust.id)).toContainText('准备失败 1');spec=await(await page.request.get('/certificates/spec/'+spec.id)).json();expect(!!spec.lifecycle.current_version).toBe(true);expect(spec.lifecycle.active).toEqual([]);const first=spec.lifecycle.current_version;
+ // Only the owned worker talks ACME. Preparation consumes the EAB once.
+ let management=await(await page.request.get('/pki/management')).json();expect(management.enrollments[0].binding_state).toBe('consumed');expect(management.certificates.length).toBe(1);
+ const siteResponse=await page.request.post('/sites',{headers:await headers(),data:{name:'PKI native site',group_ids:[],config:{enabled:true,domains:['entry.owned.test'],entry_certificate:{id:spec.id,revision:1,status:'unavailable'},maintenance:{enabled:true,status:503,message:'owned-pki'}}}});expect(siteResponse.status()).toBe(201);const site=await siteResponse.json();
+ const prepare=await page.request.post('/releases/prepare',{headers:await headers(),data:{site_ids:[site.resource_id],expected:{['site:'+site.resource_id]:1}}});expect(prepare.status()).toBe(201);const candidate=await prepare.json();expect((await page.request.post('/releases/'+candidate.id+'/publish',{headers:await headers(),data:{}})).status()).toBe(202);
+ await expect.poll(async()=>{const r=await(await page.request.get('/certificates/spec/'+spec.id)).json();return r.lifecycle.active?.[0]?.version_id},{timeout:10000}).toBe(first);const firstSerial=await nativeSerial();expect(firstSerial).toBe(management.certificates[0].serial.replace(/^0+/,''));await specPanel.getByRole('button',{name:'刷新证书规格'}).click();await expect(specPanel.getByTestId('active-binding')).toContainText(first);
+ execFileSync('docker',['stop','-t','2',fixture.edgeContainer],{timeout:8000,stdio:'pipe'});const renewed=await action('renew',spec.id);expect(renewed.failed).toBe(false);expect(renewed.version_id===first).toBe(false);spec=await(await page.request.get('/certificates/spec/'+spec.id)).json();expect(spec.lifecycle.current_version).toBe(renewed.version_id);expect(spec.lifecycle.active[0].version_id).toBe(first);await specPanel.getByRole('button',{name:'刷新证书规格'}).click();await expect(specPanel.getByTestId('resource-'+spec.id)).toContainText('当前存储版本尚未确认加载');execFileSync('docker',['start',fixture.edgeContainer],{timeout:8000,stdio:'pipe'});fixture.edgeTLSAddress=execFileSync('docker',['port',fixture.edgeContainer,'8443/tcp'],{timeout:5000,encoding:'utf8'}).trim();await expect.poll(async()=>{const r=await(await page.request.get('/certificates/spec/'+spec.id)).json();return r.lifecycle.active?.[0]?.version_id},{timeout:10000}).toBe(renewed.version_id);management=await(await page.request.get('/pki/management')).json();expect(management.certificates.length).toBe(2);const serial=await nativeSerial();expect(serial===firstSerial).toBe(false);expect(management.certificates.some((c:any)=>c.serial.replace(/^0+/,'')===serial)).toBe(true);
+ // Save an unpublished management revision before failing the online rev1.
+ await action('mfa');expect((await page.request.put('/certificates/spec/'+spec.id,{headers:await headers(),data:{expected_revision:1,config:spec.body,totp_code:code()}})).status()).toBe(200);
+ spec=await(await page.request.get('/certificates/spec/'+spec.id)).json();expect(spec.revision).toBe(2);expect(spec.lifecycle.current_version).toBeUndefined();expect(spec.lifecycle.active[0].spec_revision).toBe(1);
+ const failed=await action('fail',spec.id,1);expect(failed.failed).toBe(true);
+ spec=await(await page.request.get('/certificates/spec/'+spec.id)).json();
+ const online=spec.lifecycle.revisions.find((s:any)=>s.revision===1),draft=spec.lifecycle.revisions.find((s:any)=>s.revision===2);
+ expect(online.failures).toBe(1);expect(!!online.next_attempt).toBe(true);expect(online.current_version).toBe(renewed.version_id);
+ expect(draft.failures).toBe(0);expect(draft.next_attempt).toBeUndefined();expect(spec.lifecycle.failures).toBe(0);
+ expect(spec.lifecycle.active[0].version_id).toBe(renewed.version_id);expect(spec.lifecycle.active[0].spec_revision).toBe(1);
+ await specPanel.getByRole('button',{name:'刷新证书规格'}).click();
+ await expect(specPanel.getByTestId('resource-'+spec.id)).toContainText('历史规格/版本仍生效');
+ await expect(specPanel.getByTestId('revision-lifecycle-'+spec.id+'-1')).toContainText('当前已验证绑定');
+ await expect(specPanel.getByTestId('revision-lifecycle-'+spec.id+'-1')).toContainText('续期失败 1');
+ await expect(specPanel.getByTestId('revision-lifecycle-'+spec.id+'-1')).not.toContainText('下次重试 无');
+ await expect(specPanel.getByTestId('revision-lifecycle-'+spec.id+'-2')).toContainText('续期失败 0');expect(await nativeSerial()).toBe(serial);
+ await page.getByRole('link',{name:'内部身份',exact:true}).click();await expect(page.getByTestId('one-time-eab')).toHaveCount(0);await expect(page.getByTestId('principal-'+enrollment.principal.id)).toContainText('已单次消费');await action('mfa');await page.getByLabel('身份操作动态验证码').fill(code());await page.getByRole('button',{name:'停用身份',exact:true}).click();await expect(page.getByRole('status')).toContainText('身份已停用');management=await(await page.request.get('/pki/management')).json();expect(management.certificates.every((c:any)=>!c.revoked_at)).toBe(true);
+ await action('mfa');await page.getByLabel('身份操作动态验证码').fill(code());await page.getByRole('button',{name:'吊销单张证书'}).first().click();await expect(page.getByRole('status')).toContainText('单张证书吊销已提交');management=await(await page.request.get('/pki/management')).json();expect(management.certificates.filter((c:any)=>!!c.revoked_at).length).toBe(1);const audit=await(await page.request.get('/audit?limit=100&offset=0')).text();expect(audit.includes('pki.principal.disabled')).toBe(true);expect(audit.includes('pki.certificate.revoked')).toBe(true);expect(audit.includes(eab.hmac)).toBe(false);
+ const storage=await page.evaluate(()=>JSON.stringify({local:{...localStorage},session:{...sessionStorage}}));expect(storage.includes(eab.hmac)).toBe(false);expect(storage.includes('owned-fixture-token')).toBe(false);
+ // A second unselected draft adds a hidden shared reference. Current scope
+ // rechecks must hide the whole shared material and all unreferenced secrets.
+ const hidden=await page.request.post('/sites',{headers:await headers(),data:{name:'隐藏共享站点',group_ids:[],config:{enabled:true,domains:['hidden.owned.test'],entry_certificate:{id:spec.id,revision:1,status:'unavailable'},maintenance:{enabled:true,status:503,message:'hidden'}}}});expect(hidden.status()).toBe(201);
+ writeFileSync(fixture.scopeSignal,JSON.stringify({site_id:site.resource_id}),{mode:0o600});await expect.poll(async()=>(await(await page.request.get('/auth/session')).json()).role).toBe('editor');expect((await page.request.get('/certificates/spec/'+spec.id)).status()).toBe(403);expect((await(await page.request.get('/certificates/spec')).json()).items).toEqual([]);expect((await(await page.request.get('/certificates/credential')).json()).items).toEqual([]);await page.getByRole('link',{name:'凭据管理',exact:true}).click();await expect(page.getByRole('button',{name:'新建CA 账号'})).toBeDisabled();await expect(page.getByText('entry.owned.test',{exact:true})).toHaveCount(0);
+ console.log('Real API + standard EAB/HTTP01 CA/lego + native edge certificate issue/renew/failure + separate disable/revoke/audit PASS');
+});

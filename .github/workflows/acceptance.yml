@@ -1,0 +1,98 @@
+name: Gatebeam acceptance
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gatebeam-acceptance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  full20:
+    name: Full acceptance / ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    env:
+      CI_COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      GATEBEAM_TARGET_ARCH: ${{ matrix.arch }}
+      GATEBEAM_ACCEPTANCE_EXECUTION: native
+      GATEBEAM_ACCEPTANCE_KEEP_GOING: '1'
+      GATEBEAM_BROWSER_CHANNEL: chromium
+      GATEBEAM_TEST_OPENSSL: /usr/bin/openssl
+      GOTOOLCHAIN: local
+      PNPM_CONFIG_MANAGE_PACKAGE_MANAGER_VERSIONS: 'false'
+      COMPOSE_ANSI: never
+      COMPOSE_PROGRESS: plain
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ env.CI_COMMIT_SHA }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: '1.27.3'
+          cache: false
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '26.13.0'
+          package-manager-cache: false
+
+      - name: Prepare native acceptance dependencies
+        run: |
+          test "$(git rev-parse HEAD)" = "$CI_COMMIT_SHA"
+          test "$(go env GOHOSTOS)" = linux
+          test "$(go env GOHOSTARCH)" = "$GATEBEAM_TARGET_ARCH"
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends python3-yaml ripgrep
+          sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/pnpm
+          node scripts/install-pnpm.mjs
+          echo /opt/pnpm >> "$GITHUB_PATH"
+          /opt/pnpm/pnpm --dir web install --frozen-lockfile
+          /opt/pnpm/pnpm --dir web exec playwright install --with-deps chromium
+          python3 scripts/ci-pull-images.py
+
+      - name: Check workflow and tooling contracts
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_*.py'
+          node --test scripts/test_install_pnpm.mjs
+
+      - name: Run all twenty gates against local images
+        run: sh scripts/check-system.sh full
+
+      - name: Verify complete same-commit acceptance
+        run: |
+          PYTHONPATH=scripts python3 - <<'PY'
+          import os
+          from pathlib import Path
+          from acceptance_phases import snapshot_images
+          from ci import load, validate_receipt
+
+          result = load(Path('.work/system-acceptance/results.json'))
+          manifest = load(Path('.work/artifacts/manifest.json'))
+          if result.get('execution') != 'native':
+              raise SystemExit('expected native acceptance')
+          validate_receipt(result, manifest, os.environ['CI_COMMIT_SHA'], os.environ['GATEBEAM_TARGET_ARCH'])
+          for image in snapshot_images():
+              tag = f"gatebeam-{image['role']}:local"
+              built = next(row for row in manifest['artifacts'] if tag in row['RepoTags'])
+              if image['Id'] != built['Id']:
+                  raise SystemExit(f'acceptance image changed: {tag}')
+          PY

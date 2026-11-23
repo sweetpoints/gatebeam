@@ -1,0 +1,21 @@
+# Substitute the node's real protected paths and persistent mount dependencies.
+# Docker must not auto-start this project's containers before these checks.
+[Unit]
+Description=Gatebeam node A retained runtime
+BindsTo=docker.service
+PartOf=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+RequiresMountsFor=/mnt/gatebeam/a/edge-runtime /mnt/gatebeam/a/edge-logs /mnt/gatebeam/a/log-spool
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/usr/local/bin/gatebeam-admin --operation verify-storage --request /etc/gatebeam/a.storage.json
+ExecStart=/usr/bin/docker compose --env-file /etc/gatebeam/a.env -f /opt/gatebeam/compose.yaml up -d --no-build --no-deps nginx management background-jobs internal-ca log-query
+ExecStop=/usr/bin/docker compose --env-file /etc/gatebeam/a.env -f /opt/gatebeam/compose.yaml stop --timeout 65 nginx management background-jobs internal-ca log-query
+TimeoutStartSec=90
+TimeoutStopSec=90
+
+[Install]
+WantedBy=docker.service

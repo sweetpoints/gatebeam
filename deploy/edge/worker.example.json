@@ -1,0 +1,28 @@
+{
+  "mode": "worker",
+  "log_directory": "/var/lib/gatebeam/logs",
+  "log_spool_directory": "/var/lib/gatebeam/spool",
+  "environment": "production",
+  "database_file": "/run/gatebeam/database-url",
+  "management_api_address": "10.42.0.30:9443",
+  "protected_networks": [
+    "10.42.0.30/32",
+    "10.42.0.31/32"
+  ],
+  "archive_credentials_file": "/run/gatebeam/r2-archive.json",
+  "query_socket": "/run/query/query.sock",
+  "notification_recipient": "age1_REPLACE_WITH_DEDICATED_NOTIFICATION_PUBLIC_RECIPIENT",
+  "notification_identity_file": "/run/gatebeam/notification.agekey",
+  "acme_webroot": "/var/lib/gatebeam/acme",
+  "certificate_provider_identity_file": "/run/gatebeam/provider.agekey",
+  "certificate_recipient": "age1_REPLACE_WITH_DEDICATED_LEAF_PUBLIC_RECIPIENT",
+  "ca_origin": "https://ca.internal.example:8444",
+  "certificate_acme_transport_trust_file": "/run/gatebeam/ca-transport-roots.pem",
+  "node_id": "11111111-1111-4111-8111-111111111111",
+  "node_epoch": 1,
+  "runtime_protocol": 1,
+  "image_digest": "sha256:REPLACE_64_HEX",
+  "health_listen": "172.31.0.5:9090",
+  "control_socket": "/run/control/control.sock",
+  "drain_seconds": 60
+}

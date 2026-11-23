@@ -1,0 +1,222 @@
+# One independently managed project per gateway VM; external PostgreSQL only.
+# Provision fixed images and retained external volumes before compose create.
+networks:
+    node-private:
+        internal: false
+        ipam:
+            config:
+                - subnet: 172.31.0.0/29
+    query-egress:
+        ipam:
+            config:
+                - subnet: 172.29.0.0/29
+services:
+    background-jobs:
+        cap_drop:
+            - ALL
+        cpus: 0.5
+        image: ${GATEBEAM_JOBS_IMAGE:?Set GATEBEAM_JOBS_IMAGE in .env}
+        logging:
+            driver: json-file
+            options:
+                max-file: "1"
+                max-size: 1m
+        mem_limit: 256m
+        networks:
+            node-private:
+                ipv4_address: 172.31.0.5
+        pids_limit: 64
+        ports:
+            - ${NODE_PRIVATE_ADDRESS:?Set this VM private address}:${GATEBEAM_JOBS_HEALTH_PORT:?Set role health port}:9090
+        read_only: true
+        restart: on-failure:5
+        security_opt:
+            - no-new-privileges:true
+        stop_grace_period: 75s
+        tmpfs:
+            - /tmp:size=16m,mode=1777
+        user: 101:101
+        volumes:
+            - ${GATEBEAM_SECRET_ROOT:?Set node secret root}/worker:/run/gatebeam:ro
+            - acme-challenges:/var/lib/gatebeam/acme
+            - edge-logs:/var/lib/gatebeam/logs
+            - log-spool:/var/lib/gatebeam/spool
+            - query-socket:/run/query
+            - background-jobs-control:/run/control
+            - worker-capsules:/var/lib/gatebeam/capsules/worker
+            - backup-spool:/var/lib/gatebeam/backups
+    internal-ca:
+        cap_drop:
+            - ALL
+        cpus: 1
+        image: ${GATEBEAM_CA_IMAGE:?Set GATEBEAM_CA_IMAGE in .env}
+        logging:
+            driver: json-file
+            options:
+                max-file: "1"
+                max-size: 1m
+        mem_limit: 256m
+        networks:
+            node-private:
+                ipv4_address: 172.31.0.6
+        pids_limit: 64
+        ports:
+            - ${NODE_PRIVATE_ADDRESS:?Set this VM private address}:${GATEBEAM_CA_HEALTH_PORT:?Set role health port}:9090
+            - ${NODE_PRIVATE_ADDRESS:?Set this VM private address}:8444:8444
+            - ${NODE_PRIVATE_ADDRESS:?Set this VM private address}:8081:8081
+        read_only: true
+        restart: on-failure:5
+        security_opt:
+            - no-new-privileges:true
+        stop_grace_period: 75s
+        tmpfs:
+            - /tmp:size=16m,mode=1777
+        user: 101:101
+        volumes:
+            - ${GATEBEAM_SECRET_ROOT:?Set node secret root}/ca:/run/gatebeam:ro
+            - internal-ca-control:/run/control
+            - ca-capsules:/var/lib/gatebeam/capsules/ca
+    log-query:
+        cap_drop:
+            - ALL
+        cpus: 1
+        image: ${GATEBEAM_LOG_QUERY_IMAGE:?Set GATEBEAM_LOG_QUERY_IMAGE in .env}
+        logging:
+            driver: json-file
+            options:
+                max-file: "1"
+                max-size: 1m
+        mem_limit: 512m
+        networks:
+            query-egress:
+                ipv4_address: 172.29.0.2
+        pids_limit: 64
+        ports:
+            - ${NODE_PRIVATE_ADDRESS:?Set this VM private address}:${GATEBEAM_LOG_QUERY_HEALTH_PORT:?Set role health port}:9090
+        read_only: true
+        restart: on-failure:5
+        security_opt:
+            - no-new-privileges:true
+        stop_grace_period: 75s
+        tmpfs:
+            - /tmp:size=1g,mode=1777
+        ulimits:
+            nofile:
+                hard: 12288
+                soft: 12288
+        user: 101:101
+        volumes:
+            - ${GATEBEAM_SECRET_ROOT:?Set node secret root}/query:/run/gatebeam:ro
+            - log-spool:/var/lib/gatebeam/spool:ro
+            - query-socket:/run/query
+            - log-query-control:/run/control
+    management:
+        cap_drop:
+            - ALL
+        cpus: 1
+        image: ${GATEBEAM_MANAGEMENT_IMAGE:?Set GATEBEAM_MANAGEMENT_IMAGE in .env}
+        logging:
+            driver: json-file
+            options:
+                max-file: "1"
+                max-size: 1m
+        mem_limit: 256m
+        networks:
+            node-private:
+                ipv4_address: 172.31.0.3
+        pids_limit: 64
+        ports:
+            - ${NODE_PRIVATE_ADDRESS:?Set this VM private address}:${GATEBEAM_MANAGEMENT_HEALTH_PORT:?Set role health port}:9090
+            - ${NODE_PRIVATE_ADDRESS:?Set this VM private address}:9443:9443
+        read_only: true
+        restart: on-failure:5
+        security_opt:
+            - no-new-privileges:true
+        stop_grace_period: 75s
+        tmpfs:
+            - /tmp:size=16m,mode=1777
+        user: 101:101
+        volumes:
+            - ${GATEBEAM_SECRET_ROOT:?Set node secret root}/api:/run/gatebeam:ro
+            - management-control:/run/control
+            - api-capsules:/var/lib/gatebeam/capsules/api
+    nginx:
+        cap_drop:
+            - ALL
+        cpus: 1
+        image: ${GATEBEAM_NGINX_IMAGE:?Set GATEBEAM_NGINX_IMAGE in .env}
+        logging:
+            driver: json-file
+            options:
+                max-file: "1"
+                max-size: 1m
+        mem_limit: 512m
+        networks:
+            node-private:
+                ipv4_address: 172.31.0.2
+        pids_limit: 128
+        ports:
+            - ${EDGE_BIND:?Set gateway ingress bind}:80:8080
+            - ${EDGE_BIND:?Set gateway ingress bind}:443:8443
+            - ${NODE_PRIVATE_ADDRESS:?Set this VM private address}:${GATEBEAM_NGINX_HEALTH_PORT:?Set role health port}:9090
+        read_only: true
+        restart: on-failure:5
+        security_opt:
+            - no-new-privileges:true
+        stop_grace_period: 75s
+        tmpfs:
+            - /tmp:size=64m,mode=1777
+        user: 101:101
+        volumes:
+            - ${GATEBEAM_SECRET_ROOT:?Set node secret root}/edge:/run/gatebeam:ro
+            - acme-challenges:/var/lib/gatebeam/acme
+            - edge-runtime:/var/lib/gatebeam
+            - edge-logs:/var/lib/gatebeam/logs
+            - nginx-control:/run/control
+            - edge-capsules:/var/lib/gatebeam/capsules/edge
+volumes:
+    acme-challenges:
+        external: true
+        name: ${NODE_STORAGE_PREFIX:?Set unique node storage prefix}-acme-challenges
+    api-capsules:
+        external: true
+        name: ${NODE_STORAGE_PREFIX:?Set unique node storage prefix}-api-capsules
+    background-jobs-control:
+        external: true
+        name: ${NODE_STORAGE_PREFIX:?Set unique node storage prefix}-background-jobs-control
+    backup-spool:
+        external: true
+        name: ${NODE_STORAGE_PREFIX:?Set unique node storage prefix}-backup-spool
+    ca-capsules:
+        external: true
+        name: ${NODE_STORAGE_PREFIX:?Set unique node storage prefix}-ca-capsules
+    edge-capsules:
+        external: true
+        name: ${NODE_STORAGE_PREFIX:?Set unique node storage prefix}-edge-capsules
+    edge-logs:
+        external: true
+        name: ${NODE_STORAGE_PREFIX:?Set unique node storage prefix}-edge-logs
+    edge-runtime:
+        external: true
+        name: ${NODE_STORAGE_PREFIX:?Set unique node storage prefix}-edge-runtime
+    internal-ca-control:
+        external: true
+        name: ${NODE_STORAGE_PREFIX:?Set unique node storage prefix}-internal-ca-control
+    log-query-control:
+        external: true
+        name: ${NODE_STORAGE_PREFIX:?Set unique node storage prefix}-log-query-control
+    log-spool:
+        external: true
+        name: ${NODE_STORAGE_PREFIX:?Set unique node storage prefix}-log-spool
+    management-control:
+        external: true
+        name: ${NODE_STORAGE_PREFIX:?Set unique node storage prefix}-management-control
+    nginx-control:
+        external: true
+        name: ${NODE_STORAGE_PREFIX:?Set unique node storage prefix}-nginx-control
+    query-socket:
+        external: true
+        name: ${NODE_STORAGE_PREFIX:?Set unique node storage prefix}-query-socket
+    worker-capsules:
+        external: true
+        name: ${NODE_STORAGE_PREFIX:?Set unique node storage prefix}-worker-capsules

@@ -1,0 +1,63 @@
+{
+  "environment": "production",
+  "mode": "api",
+  "database_file": "/run/gatebeam/api-database",
+  "identity_file": "/run/gatebeam/identity.agekey",
+  "api_listen": "172.31.0.3:9443",
+  "api_private_network": "172.31.0.0/29",
+  "api_origin": "https://management.example.com",
+  "management_domain": "management.example.com",
+  "management_address": "10.42.0.30:443",
+  "management_certificate_file": "/run/gatebeam/management.pem",
+  "management_trust_file": "/run/gatebeam/management-ca.pem",
+  "protected_networks": [
+    "10.42.0.30/32",
+    "10.42.0.31/32"
+  ],
+  "notification_recipient": "age1_REPLACE_WITH_DEDICATED_NOTIFICATION_PUBLIC_RECIPIENT",
+  "certificate_recipient": "age1_REPLACE_WITH_DEDICATED_LEAF_PUBLIC_RECIPIENT",
+  "certificate_provider_recipient": "age1_REPLACE_WITH_DEDICATED_PROVIDER_PUBLIC_RECIPIENT",
+  "ca_recipient": "age1_REPLACE_WITH_DEDICATED_CA_PUBLIC_RECIPIENT",
+  "ca_origin": "https://ca.internal.example:8444",
+  "ca_server_names": [
+    "app-a.internal.example",
+    "app-b.internal.example",
+    "openobserve.gatebeam.internal"
+  ],
+  "ca_client_names": [
+    "gateway-a.gatebeam.internal",
+    "gateway-b.gatebeam.internal"
+  ],
+  "node_id": "11111111-1111-4111-8111-111111111111",
+  "node_epoch": 1,
+  "runtime_protocol": 1,
+  "image_digest": "sha256:REPLACE_64_HEX",
+  "health_listen": "172.31.0.3:9090",
+  "control_socket": "/run/control/control.sock",
+  "drain_seconds": 60,
+  "api_tls_certificate_file": "/run/gatebeam/api-tls.pem",
+  "api_tls_key_file": "/run/gatebeam/api-tls.key",
+  "api_tls_trust_file": "/run/gatebeam/api-trust.pem",
+  "api_tls_client_names": [
+    "gateway-a.gatebeam.internal",
+    "gateway-b.gatebeam.internal"
+  ],
+  "health_endpoints": {
+    "11111111-1111-4111-8111-111111111111": {
+      "nginx": "http://10.42.0.30:19091",
+      "management": "http://10.42.0.30:19092",
+      "background-jobs": "http://10.42.0.30:19093",
+      "internal-ca": "http://10.42.0.30:19094",
+      "log-query": "http://10.42.0.30:19095"
+    },
+    "22222222-2222-4222-8222-222222222222": {
+      "nginx": "http://10.42.0.31:19091",
+      "management": "http://10.42.0.31:19092",
+      "background-jobs": "http://10.42.0.31:19093",
+      "internal-ca": "http://10.42.0.31:19094",
+      "log-query": "http://10.42.0.31:19095"
+    }
+  },
+  "api_tls_crl_file": "/run/gatebeam/api-client.crl",
+  "api_tls_state_file": "/var/lib/gatebeam/capsules/api/tls-status.json"
+}

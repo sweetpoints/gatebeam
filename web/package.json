@@ -1,0 +1,37 @@
+{
+  "name": "gatebeam-console",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@12.16.1",
+  "engines": {
+    "node": ">=26.13.0 <27",
+    "pnpm": "12.16.1"
+  },
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "typecheck": "vue-tsc --noEmit",
+    "build": "vite build",
+    "test:ingress": "playwright test tests/ingress.spec.ts",
+    "test:pki": "playwright test tests/pki.spec.ts",
+    "test:auth": "playwright test tests/auth.spec.ts"
+  },
+  "dependencies": {
+    "vue": "3.5.45",
+    "naive-ui": "2.45.3",
+    "tailwindcss": "4.3.4",
+    "vue-router": "5.4.0",
+    "pinia": "4.1.0",
+    "@tanstack/vue-query": "5.106.1",
+    "@lucide/vue": "1.70.0"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "vite": "8.3.6",
+    "@vitejs/plugin-vue": "6.0.10",
+    "@tailwindcss/vite": "4.3.4",
+    "vue-tsc": "3.3.14",
+    "@playwright/test": "1.65.0",
+    "@types/node": "26.6.6"
+  }
+}

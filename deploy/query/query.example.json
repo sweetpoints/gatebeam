@@ -1,0 +1,14 @@
+{
+  "mode": "query",
+  "environment": "production",
+  "query_credentials_file": "/run/gatebeam/r2-read.json",
+  "query_socket": "/run/query/query.sock",
+  "query_local_directory": "/var/lib/gatebeam/spool",
+  "node_id": "11111111-1111-4111-8111-111111111111",
+  "node_epoch": 1,
+  "runtime_protocol": 1,
+  "image_digest": "sha256:REPLACE_64_HEX",
+  "health_listen": "172.29.0.2:9090",
+  "control_socket": "/run/control/control.sock",
+  "drain_seconds": 60
+}

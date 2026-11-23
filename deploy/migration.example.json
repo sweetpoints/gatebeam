@@ -1,0 +1,6 @@
+{
+  "environment": "production",
+  "mode": "migrate",
+  "database_file": "/run/operator/migration-database",
+  "migrate_roles": true
+}

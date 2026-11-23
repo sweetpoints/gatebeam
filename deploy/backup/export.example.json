@@ -1,0 +1,1 @@
+{"mode":"backup-export","environment":"production","database_file":"/run/gatebeam/backup-database","backup_recipient":"REPLACE_WITH_OFFLINE_RECOVERY_PUBLIC_AGE_RECIPIENT","backup_epoch":"REPLACE_WITH_SHARED_KEY_EPOCH","backup_capsule_directory":"/var/lib/gatebeam/backup-capsules","backup_spool_directory":"/var/lib/gatebeam/backup-spool"}

@@ -1,0 +1,14 @@
+/target
+/.worktrees/
+/.superpowers/
+/.work/
+/secrets/
+*.age
+/web/node_modules/
+/web/dist/
+/web/test-results/
+/.env
+
+/ci-output/
+
+__pycache__/

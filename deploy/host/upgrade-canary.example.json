@@ -1,0 +1,9 @@
+{
+  "session_cookie": "REPLACE_WITH_VALID_SCOPED_SESSION",
+  "csrf_token": "REPLACE_WITH_MATCHING_CSRF",
+  "site_id": "REPLACE_WITH_DISABLED_UNPUBLISHED_CANARY_SITE_UUID",
+  "business_host": "REPLACE_WITH_MIGRATED_BUSINESS_HOST",
+  "business_path": "/health",
+  "business_sha256": "REPLACE_WITH_EXPECTED_BODY_SHA256",
+  "business_trust_file": "/etc/gatebeam/canary/business-trust.pem"
+}

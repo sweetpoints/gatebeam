@@ -1,0 +1,74 @@
+version: '2'
+sql:
+  - engine: postgresql
+    schema: [db/migrations/00001_core.sql, db/migrations/00023_job_targets.sql]
+    queries: internal/platform/jobs/queries
+    gen:
+      go:
+        package: dbgen
+        out: internal/platform/jobs/dbgen
+        sql_package: pgx/v5
+  - engine: postgresql
+    schema: db/migrations/00001_core.sql
+    queries: internal/platform/audit/queries
+    gen:
+      go:
+        package: dbgen
+        out: internal/platform/audit/dbgen
+        sql_package: pgx/v5
+  - engine: postgresql
+    schema: [db/migrations/00001_core.sql, db/migrations/00002_auth.sql, db/migrations/00003_access.sql]
+    queries: internal/modules/identity/infrastructure/postgres/queries
+    gen:
+      go:
+        package: dbgen
+        out: internal/modules/identity/infrastructure/postgres/dbgen
+        sql_package: pgx/v5
+  - engine: postgresql
+    schema: db/migrations/00004_ingress.sql
+    queries: internal/modules/ingress/infrastructure/postgres/queries
+    gen:
+      go:
+        package: dbgen
+        out: internal/modules/ingress/infrastructure/postgres/dbgen
+        sql_package: pgx/v5
+  - engine: postgresql
+    schema: [db/migrations/00005_releases.sql, db/migrations/00006_execution.sql, db/migrations/00007_runtime.sql, db/migrations/00013_cloudflare_ranges.sql, db/migrations/00015_route_verification.sql, db/migrations/00016_deployment_material_bindings.sql, db/migrations/00024_deployment_nodes.sql, db/migrations/00027_upgrade_runs.sql]
+    queries: internal/modules/deployment/infrastructure/postgres/queries
+    gen:
+      go:
+        package: dbgen
+        out: internal/modules/deployment/infrastructure/postgres/dbgen
+        sql_package: pgx/v5
+  - engine: postgresql
+    schema: [db/migrations/00008_pki.sql, db/migrations/00009_pki_accounts.sql, db/migrations/00010_pki_orders.sql, db/migrations/00011_pki_status.sql]
+    queries: internal/modules/pki/infrastructure/postgres/queries
+    gen:
+      go:
+        package: dbgen
+        out: internal/modules/pki/infrastructure/postgres/dbgen
+        sql_package: pgx/v5
+  - engine: postgresql
+    schema: [db/migrations/00012_certificates.sql, db/migrations/00014_certificate_capabilities.sql]
+    queries: internal/modules/certificates/infrastructure/postgres/queries
+    gen:
+      go:
+        package: dbgen
+        out: internal/modules/certificates/infrastructure/postgres/dbgen
+        sql_package: pgx/v5
+  - engine: postgresql
+    schema: [db/migrations/00017_observability.sql, db/migrations/00018_observability_history.sql, db/migrations/00026_node_observability.sql]
+    queries: internal/modules/observability/infrastructure/postgres/queries
+    gen:
+      go:
+        package: dbgen
+        out: internal/modules/observability/infrastructure/postgres/dbgen
+        sql_package: pgx/v5
+  - engine: postgresql
+    schema: db/migrations/00019_notifications.sql
+    queries: internal/modules/notification/infrastructure/postgres/queries
+    gen:
+      go:
+        package: dbgen
+        out: internal/modules/notification/infrastructure/postgres/dbgen
+        sql_package: pgx/v5

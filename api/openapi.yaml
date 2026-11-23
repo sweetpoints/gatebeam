@@ -1,0 +1,2305 @@
+openapi: 3.1.0
+info:
+  title: Gatebeam Management API
+  version: 0.1.0
+  description: Management REST only. Certificate issuance uses standard ACME v2, OCSP and CRL protocols in their own adapters.
+servers:
+  - url: /
+security:
+  - session: []
+paths:
+  /statistics/query:
+    post:
+      summary: Query current-authorized minute statistics
+      description: Maximum 100 sites and 24 hours, minute-aligned UTC bounds. No SQL. IngestedAt is the latest contributing bucket ingestion time, not proof all records were collected. Percentiles are histogram approximations.
+      security: [{session: []}, {bearer: []}]
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [SiteIDs, From, To]
+              properties:
+                SiteIDs: {type: array, minItems: 1, maxItems: 100, items: {type: string, format: uuid}}
+                From: {type: string, format: date-time}
+                To: {type: string, format: date-time}
+                Route: {type: string}
+                Method: {type: string}
+                ConfigID: {type: string}
+                StatusClass: {type: integer, minimum: 0, maximum: 5}
+      responses:
+        '200':
+          description: Bounded approximate statistics
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StatisticsSeries'}
+        '400': {description: Invalid bounded filter}
+        '403': {description: Current credential or site denied}
+        '413': {description: Capacity exceeded}
+        '503': {description: Statistics unavailable}
+  /log-queries:
+    post:
+      summary: Submit a frozen bounded asynchronous historical query
+      description: Full current actor credential and current site access are checked at submit and execution. Source selects archive (default) or local only; no SQL, object keys, URLs or paths accepted. Queue capacity 64, expiry 10 minutes; maximum 31 days, 4096 objects, 2 GiB scan, 10000 returned rows. Over-limit execution fails without partial-success rows. Local immutable objects are pinned while queued/running; query-worker checks size/SHA256 of opened immutable file descriptors under its configured read-only spool root. API has no executor socket or R2 credentials.
+      security: [{session: []}, {bearer: []}]
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LogQueryFilter'}
+      responses:
+        '202':
+          description: Persisted queued job; neither complete nor full coverage
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LogQueryJob'}
+        '400': {description: Invalid bounded filter}
+        '403': {description: Current credential or site denied}
+        '413': {description: Admission scan/object/queue limit exceeded}
+    get:
+      summary: List this exact credential's unexpired query jobs
+      description: Bounded raw-window pagination; current authorization is checked again. Reads at most limit+1 exact-credential rows. Removed site scope may leave items empty while has_more is true; follow next_offset rather than inferring completion from visible item count. No unauthorized job identities, object keys or publisher credential payloads.
+      security: [{session: []}, {bearer: []}]
+      parameters:
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 25}}
+        - {name: offset, in: query, schema: {type: integer, minimum: 0, maximum: 100000, default: 0}}
+      responses:
+        '200':
+          description: Authorized query task page
+          content:
+            application/json:
+              schema: {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/LogQueryJob'}}, limit: {type: integer}, offset: {type: integer}, has_more: {type: boolean, description: More raw rows exist beyond the scanned window even when all visible items were filtered}, next_offset: {type: integer, minimum: 0, description: Authoritative next raw offset when has_more is true; otherwise zero}}}
+        '403': {description: Current authority denied}
+  /log-queries/{id}:
+    get:
+      summary: Fetch one authorized 100-row result page
+      description: Exact full ActorRef must match submission, then current credential and every current site are rechecked even when job ID and cursor are known. Coverage remains local_only or archived_only; succeeded means fixed-query execution succeeded, never complete ingestion coverage.
+      security: [{session: []}, {bearer: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: cursor, in: query, schema: {type: string, description: Opaque offset returned by server; multiples of 100}}
+      responses:
+        '200':
+          description: Authorized query result page
+          content:
+            application/json:
+              schema: {type: object, properties: {Job: {$ref: '#/components/schemas/LogQueryJob'}, Rows: {type: array, maxItems: 100, items: {$ref: '#/components/schemas/LogQueryRow'}}, Cursor: {type: string}}}
+        '400': {description: Invalid cursor}
+        '403': {description: Unknown job or current access denied}
+        '409': {description: Expired query}
+  /log-queries/{id}/cancel:
+    post:
+      summary: Cancel this credential's queued/running query
+      description: Same current credential/site checks as fetch. Durable cancelled state fences late worker completion. Repeated cancellation or terminal jobs leave the terminal result unchanged.
+      security: [{session: []}, {bearer: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+        - {$ref: '#/components/parameters/CSRF'}
+      responses:
+        '204': {description: Cancel receipt persisted}
+        '403': {description: Current credential or site denied}
+  /log-queries/{id}/download:
+    get:
+      summary: Download the bounded completed JSON result
+      description: Current exact credential/site access is rechecked on every page before writing response bytes. No signed URL or token can bypass current authorization. Only succeeded jobs; Cache-Control no-store.
+      security: [{session: []}, {bearer: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Attachment gatebeam-logs.json; never proof of complete ingestion coverage
+          content:
+            application/json:
+              schema: {type: array, maxItems: 10000, items: {$ref: '#/components/schemas/LogQueryRow'}}
+        '403': {description: Unknown job or current authority denied}
+        '409': {description: 'Unfinished, failed, cancelled or expired job'}
+  /backups:
+    get:
+      summary: Read delivery receipts and last local recovery command report
+      description: Current interactive administrator only. Read-only; no remote restore, key upload or artifact paths. A backup receipt always has artifact_verification required; omitted historical details have detail_status omitted_for_recovery. The fixed locally configured safe report spool is mounted read-only into API. Report failure remains visible after refresh. isolated_staged requires manual activation and never sets business_activated true.
+      parameters:
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 25}}
+        - {name: offset, in: query, schema: {type: integer, minimum: 0, maximum: 100000, default: 0}}
+      responses:
+        '200':
+          description: Safe delivery receipts and local command report
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BackupView'}
+        '403': {description: Current interactive administrator required}
+  /alert-channels:
+    get:
+      summary: Read up to 100 channel metadata records without consuming TOTP
+      description: Current interactive administrator required. No secret or ciphertext readback; Cache-Control no-store.
+      responses:
+        "200": {description: Channel metadata array}
+        "403": {description: Current administrator required}
+        "503": {description: Query unavailable}
+    put:
+      summary: Create or update a persistent notification channel
+      description: Current interactive administrator, CSRF and fresh single-use TOTP. Body has channel, expected_revision, optional write-only secret, and totp. New owner is assigned from the authenticated administrator; existing owner is retained. Channel requires kind telegram or smtp, enabled, recipient, and either nonempty site_ids or system true. Empty recipient is explicitly non-sending. SMTP requires host, port, from and tls_mode starttls or implicit. No arbitrary message or provider URL. A successful write commits encrypted credentials and audit together.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [channel, expected_revision, totp]
+              properties:
+                channel: {type: object}
+                expected_revision: {type: integer, minimum: 0}
+                secret: {type: string, writeOnly: true, maxLength: 4096}
+                totp: {type: string, writeOnly: true}
+      responses:
+        "200": {description: 'Saved channel metadata, never credentials'}
+        "400": {description: Invalid request}
+        "403": {description: Current administrator and unused MFA required}
+        "409": {description: Revision conflict}
+        "503": {description: Operation unavailable}
+  /alert-channels/{id}/test:
+    parameters:
+      - {in: path, name: id, required: true, schema: {type: string}}
+    post:
+      summary: Queue a fixed safe asynchronous channel test
+      description: Current interactive administrator, CSRF and fresh TOTP. External delivery occurs only in worker and rechecks current channel and persistent owner authority.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: false, required: [totp], properties: {totp: {type: string, writeOnly: true}}}
+      responses:
+        "202": {description: 'Safe test and audit durably queued, not yet delivered'}
+        "403": {description: Current administrator and unused MFA required}
+        "503": {description: Queue unavailable}
+  /alerts:
+    get:
+      summary: Read up to 100 incidents and 100 recent per-channel delivery outcomes
+      description: Current interactive administrator only. Fixed state/error codes and sanitized event kind/state/lag; no resource identity, site details, raw message, secret or provider response. Does not consume TOTP.
+      responses:
+        "200": {description: Safe incidents and deliveries arrays; incidents remain visible without configured channels}
+        "403": {description: Current administrator required}
+        "503": {description: Query unavailable}
+  /pki/management:
+    get:
+      summary: Read authorized internal enrollment and issued certificate metadata
+      description: Current interactive administrator only; no TOTP consumption. Returns at most 1000 enrollments and 1000 certificate metadata rows, fixed trusted ca_origin standard directory URLs, EAB consumption/expiry state and authoritative revocations. Never returns EAB HMAC, cipher, private keys, certificate DER, or signer state. Responses use Cache-Control no-store.
+      responses:
+        "200":
+          description: Public enrollment and issued certificate metadata
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PKIManagementView'}
+        "403": {description: Current interactive administrator required; site-scoped API tokens have no global metadata authority}
+        "503": {description: Query unavailable}
+  /certificates/{kind}:
+    parameters:
+      - {$ref: '#/components/parameters/CertificateKind'}
+    get:
+      summary: List safe certificate resource metadata and lifecycle state
+      security: [{session: []}, {bearer: []}]
+      description: At most 1000 current resources. Rechecks current credential and View on every affected draft and published site under the normal identity, ingress, certificate lock order. A resource with no affected site requires interactive global administrator authority. Inaccessible resources are omitted. Metadata only; no network probe or secret readback. Stored current versions and exact final verified deployment bindings are distinct.
+      responses:
+        "200":
+          description: Authorized resource metadata only
+          content:
+            application/json:
+              schema: {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/CertificateResourceView'}}}}
+        "403": {description: Current credential denied}
+        "503": {description: Query unavailable}
+    post:
+      summary: Create and explicitly enable a certificate resource for background preparation
+      description: Current interactive administrator, CSRF and fresh single-use TOTP required. Owning application validates all current references. Network preparation is asynchronous in the separate worker, not this request. Internal account directories derive only from trusted ca_origin. Public providers are letsencrypt, zerossl and google; no automatic provider failover. Successful import spec or trust creation is not publication or native application confirmation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CertificateResourceWrite'}
+      responses:
+        "201": {description: Resource and audit committed; preparation may still be pending, content: {application/json: {schema: {$ref: '#/components/schemas/CertificateResource'}}}}
+        "400": {description: Invalid resource or enrollment policy}
+        "403": {description: Current administrator or fresh MFA proof required}
+        "409": {description: Revision conflict or referenced material unavailable}
+        "503": {description: Operation unavailable; no success reported}
+  /certificates/{kind}/{id}:
+    parameters:
+      - {$ref: '#/components/parameters/CertificateKind'}
+      - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+    get:
+      summary: Read one currently authorized certificate resource
+      security: [{session: []}, {bearer: []}]
+      responses:
+        "200": {description: 'Safe resource metadata with stored versions, preparation/retry state and exact verified bindings', content: {application/json: {schema: {$ref: '#/components/schemas/CertificateResourceView'}}}}
+        "403": {description: Resource unavailable or not completely authorized}
+        "503": {description: Query unavailable}
+    put:
+      summary: Save an immutable new resource revision and explicitly enable it
+      description: Same authority and secret rules as creation. expected_revision must match. Scope checks freeze all old draft and published references plus new dependencies. Configuration/import replacements require manual publication. Account and credential replacement require new secret input; existing secret data is never recovered.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CertificateResourceWrite'}
+      responses:
+        "200": {description: New immutable revision and audit committed, content: {application/json: {schema: {$ref: '#/components/schemas/CertificateResource'}}}}
+        "400": {description: Invalid configuration}
+        "403": {description: Current administrator or fresh MFA proof required}
+        "409": {description: Revision conflict or unavailable dependency}
+        "503": {description: Operation unavailable}
+  /certificates/{kind}/{id}/enabled:
+    parameters:
+      - {$ref: '#/components/parameters/CertificateKind'}
+      - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+    post:
+      summary: Enable or disable a resource with current revision and fresh MFA
+      description: All-reference authorization and durable audit commit before success. Enable authorizes worker preparation. Disable is distinct from PKI principal disable and from revoking a single issued certificate; it is not a synchronous network or native activation result.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expected_revision, enabled, totp_code]
+              properties:
+                expected_revision: {type: integer, minimum: 1}
+                enabled: {type: boolean}
+                totp_code: {type: string, writeOnly: true, pattern: '^[0-9]{6}$'}
+      responses:
+        "204": {description: Enabled state and audit committed}
+        "400": {description: Invalid request}
+        "403": {description: Administrator/fresh MFA/scope denied}
+        "409": {description: Current resource revision changed}
+        "503": {description: Operation unavailable}
+  /certificates/spec/{id}/import:
+    parameters:
+      - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+    post:
+      summary: Import an externally issued certificate chain and private key
+      description: Only enabled import specs; no CSR or signing endpoint. Current interactive administrator, CSRF, all-reference scope and fresh single-use TOTP required. Inspect names, usage, chain and validity; seal key to leaf public recipient. Cannot replace a stored version in the same spec revision; save a new spec revision and manually publish. Imports never automatically renew. Request body is never logged or read back.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [certificate_pem, private_key_pem, totp_code]
+              properties:
+                certificate_pem: {type: string, writeOnly: true}
+                private_key_pem: {type: string, writeOnly: true}
+                totp_code: {type: string, writeOnly: true, pattern: '^[0-9]{6}$'}
+      responses:
+        "201": {description: Immutable public version metadata; no key/material reference readback}
+        "400": {description: 'Invalid material, purpose, names or chain'}
+        "403": {description: Administrator/fresh MFA/scope denied}
+        "409": {description: Existing version requires a new manually published spec revision}
+        "503": {description: Operation unavailable}
+  /pki/issuers/{issuer}/certificates/{serial}/revoke:
+    post:
+      summary: Permanently revoke one issued certificate
+      description: Current interactive administrator, CSRF and fresh single-use TOTP required. Authoritative revocation and audit commit together before success. Existing connections and valid OCSP caches are unaffected until normal protocol revalidation.
+      parameters:
+        - in: path
+          name: issuer
+          required: true
+          schema: {type: string, description: SHA-256 fingerprint of the issuing intermediate}
+        - in: path
+          name: serial
+          required: true
+          schema: {type: string, pattern: '^[0-7][0-9a-f]{39}$'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [totp_code]
+              properties:
+                totp_code: {type: string, pattern: '^[0-9]{6}$', writeOnly: true}
+                reason: {type: integer, enum: [0, 1, 3, 4, 5, 9], default: 0}
+      responses:
+        "204": {description: Revocation and audit committed}
+        "400": {description: Invalid request or unsupported revocation reason}
+        "403": {description: Current administrator or fresh MFA proof required}
+        "404": {description: Issued certificate unavailable}
+        "409": {description: Certificate already permanently revoked}
+        "503": {description: Transaction failed; no completion reported}
+  /pki/grants:
+    post:
+      summary: Authorize an exact PKI principal and enrollment grant
+      description: Current interactive administrator, CSRF and fresh single-use TOTP required. Policy and audit commit before success. No signing capability.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [names, purpose, directory, expires, totp_code]
+              properties:
+                names:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items: {type: string}
+                purpose: {type: string, enum: [serverAuth, clientAuth]}
+                directory: {type: string, enum: [server, client]}
+                expires: {type: string, format: date-time}
+                totp_code: {type: string, pattern: '^[0-9]{6}$', writeOnly: true}
+      responses:
+        "201":
+          description: Committed grant with ID and exact principal policy
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, principal]
+                properties:
+                  id: {type: string}
+                  principal:
+                    type: object
+                    properties:
+                      id: {type: string}
+                      names: {type: array, items: {type: string}}
+                      purpose: {type: string, enum: [serverAuth, clientAuth]}
+                      directory: {type: string, enum: [server, client]}
+                      expires: {type: string, format: date-time}
+                      disabled: {type: boolean}
+        "400": {description: Invalid or widened policy}
+        "403": {description: Current administrator or fresh MFA proof required}
+        "503": {description: Unavailable or transaction failed}
+  /pki/grants/{id}/eab:
+    post:
+      summary: Issue one-time external account binding credentials
+      description: Fresh administrator TOTP required. Returns HMAC only after commit, never on subsequent reads. Reissuing invalidates the previous unused EAB. Use with an unmodified ACME client and the matching fixed directory.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [totp_code]
+              properties:
+                totp_code: {type: string, pattern: '^[0-9]{6}$', writeOnly: true}
+      responses:
+        "201":
+          description: Committed one-time credential, Cache-Control no-store
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [kid, hmac, directory, expires]
+                properties:
+                  kid: {type: string}
+                  hmac: {type: string, description: Base64url HS256 secret shown once}
+                  directory: {type: string, enum: [server, client]}
+                  expires: {type: string, format: date-time}
+        "403": {description: Current administrator or fresh MFA proof required}
+        "404": {description: Grant unavailable}
+        "503": {description: Transaction failed; no credential returned}
+  /pki/principals/{id}/disable:
+    post:
+      summary: Disable current PKI enrollment authority
+      description: Requires current administrator and fresh TOTP. Commits authoritative state before success; does not revoke existing certificates or terminate connections.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [totp_code]
+              properties:
+                totp_code: {type: string, pattern: '^[0-9]{6}$', writeOnly: true}
+      responses:
+        "204": {description: Disabled and committed}
+        "403": {description: Current administrator or fresh MFA proof required}
+        "404": {description: Principal unavailable}
+        "503": {description: Transaction failed}
+  /auth/login:
+    post:
+      summary: Begin password proof
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, password]
+              properties:
+                name:
+                  type: string
+                password:
+                  type: string
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginChallenge"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /auth/login/finish:
+    post:
+      summary: Complete fresh TOTP proof and set HttpOnly session cookie
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [challenge_id, code]
+              properties:
+                challenge_id:
+                  type: string
+                code:
+                  type: string
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /auth/enroll:
+    post:
+      summary: Enroll pending account with its own TOTP and password
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [invite_id, password, code]
+              properties:
+                invite_id:
+                  type: string
+                password:
+                  type: string
+                code:
+                  type: string
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecoveryCodes"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /auth/recover:
+    post:
+      summary: Consume single use recovery proof and require fresh enrollment
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, password, recovery_code]
+              properties:
+                name:
+                  type: string
+                password:
+                  type: string
+                recovery_code:
+                  type: string
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Enrollment"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /auth/session:
+    get:
+      security:
+        - session: []
+        - bearer: []
+      summary: Authenticate current session or API token
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Actor"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /auth/logout:
+    post:
+      summary: Revoke current session with CSRF proof
+      parameters:
+        - $ref: "#/components/parameters/CSRF"
+      responses:
+        "204":
+          description: Success
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /accounts/{id}/reset:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      summary: Administrator resets account and requires enrollment
+      parameters:
+        - $ref: "#/components/parameters/CSRF"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [totp_code]
+              properties:
+                totp_code:
+                  type: string
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Enrollment"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /accounts/{id}/disable:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      summary: Administrator disables account immediately
+      parameters:
+        - $ref: "#/components/parameters/CSRF"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [totp_code]
+              properties:
+                totp_code:
+                  type: string
+      responses:
+        "204":
+          description: Success
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /accounts/{id}/authority:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    put:
+      summary: Administrator replaces current role and site or group grants
+      parameters:
+        - $ref: "#/components/parameters/CSRF"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [totp_code, role, grants]
+              properties:
+                totp_code:
+                  type: string
+                role:
+                  $ref: "#/components/schemas/Role"
+                grants:
+                  type: array
+                  maxItems: 100
+                  items:
+                    $ref: "#/components/schemas/Grant"
+      responses:
+        "204":
+          description: Success
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /tokens/{id}/revoke:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    post:
+      summary: Owner or administrator revokes token immediately
+      parameters:
+        - $ref: "#/components/parameters/CSRF"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [totp_code]
+              properties:
+                totp_code:
+                  type: string
+      responses:
+        "204":
+          description: Success
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /accounts:
+    get:
+      summary: List accounts (administrator)
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Bounded page ordered by stable ID (audit by time and ID descending)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, limit, offset, request_id]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Account"
+                  limit: {type: integer}
+                  offset: {type: integer}
+                  request_id: {type: string}
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+    post:
+      summary: Create pending account; creator never supplies new account MFA
+      parameters:
+        - $ref: "#/components/parameters/CSRF"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, role, totp_code]
+              properties:
+                name:
+                  type: string
+                role:
+                  $ref: "#/components/schemas/Role"
+                totp_code:
+                  type: string
+      responses:
+        "201":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Enrollment"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /tokens:
+    get:
+      summary: List own token metadata, never raw bearer
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Bounded page ordered by stable ID (audit by time and ID descending)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, limit, offset, request_id]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Token"
+                  limit: {type: integer}
+                  offset: {type: integer}
+                  request_id: {type: string}
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+    post:
+      summary: Issue own scoped token once; fresh TOTP and interactive session required
+      parameters:
+        - $ref: "#/components/parameters/CSRF"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [totp_code, actions, site_ids, expires]
+              properties:
+                totp_code:
+                  type: string
+                actions:
+                  type: array
+                  maxItems: 100
+                  items:
+                    $ref: "#/components/schemas/Action"
+                site_ids:
+                  type: array
+                  maxItems: 100
+                  items:
+                    $ref: "#/components/schemas/UUID"
+                expires:
+                  type: string
+                  format: date-time
+      responses:
+        "201":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuedToken"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /audit:
+    get:
+      summary: List audit metadata (administrator)
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Bounded page ordered by stable ID (audit by time and ID descending)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, limit, offset, request_id]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Audit"
+                  limit: {type: integer}
+                  offset: {type: integer}
+                  request_id: {type: string}
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  "/sites":
+    get:
+      summary: "List currently authorized sites"
+      security: [{"session": []}, {"bearer": []}]
+      responses:
+        "200":
+          description: "Success"
+          content:
+            "application/json":
+              schema:
+                type: "object"
+                additionalProperties: false
+                properties:
+                  items:
+                    type: "array"
+                    items:
+                      "$ref": "#/components/schemas/IngressSite"
+                  limit:
+                    type: "integer"
+                    minimum: 1
+                    maximum: 100
+                  offset:
+                    type: "integer"
+                    minimum: 0
+                    maximum: 100000
+        "400":
+          "$ref": "#/components/responses/Error"
+        "401":
+          "$ref": "#/components/responses/Error"
+        "403":
+          "$ref": "#/components/responses/Error"
+        "409":
+          "$ref": "#/components/responses/Error"
+        "503":
+          "$ref": "#/components/responses/Error"
+      description: "Sorted by resource UUID. Only limit and offset are accepted query fields; unauthorized resources are omitted. Shared targets require authority over every current draft and published reference."
+      parameters: [{"$ref": "#/components/parameters/Limit"}, {"$ref": "#/components/parameters/Offset"}]
+    post:
+      summary: "Create site in current authorized scope"
+      security: [{"session": []}, {"bearer": []}]
+      responses:
+        "201":
+          description: "Success"
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/IngressRevision"
+        "400":
+          "$ref": "#/components/responses/Error"
+        "401":
+          "$ref": "#/components/responses/Error"
+        "403":
+          "$ref": "#/components/responses/Error"
+        "409":
+          "$ref": "#/components/responses/Error"
+        "503":
+          "$ref": "#/components/responses/Error"
+      description: "Global creation requires interactive admin. Editors may create only within existing edit-granted groups; no creator privilege is assigned. Tokens cannot create new site scope."
+      parameters: [{"$ref": "#/components/parameters/CSRF"}, {"$ref": "#/components/parameters/IngressIdempotency"}]
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              type: "object"
+              additionalProperties: false
+              properties:
+                name:
+                  type: "string"
+                group_ids:
+                  type: "array"
+                  items:
+                    "$ref": "#/components/schemas/UUID"
+                  maxItems: 100
+                config:
+                  "$ref": "#/components/schemas/IngressSiteConfig"
+              required: ["name", "config"]
+  "/sites/{id}":
+    delete:
+      summary: "Delete site"
+      security: [{"session": []}, {"bearer": []}]
+      responses:
+        "204":
+          description: "Success without response body"
+        "400":
+          "$ref": "#/components/responses/Error"
+        "401":
+          "$ref": "#/components/responses/Error"
+        "403":
+          "$ref": "#/components/responses/Error"
+        "409":
+          "$ref": "#/components/responses/Error"
+        "503":
+          "$ref": "#/components/responses/Error"
+      description: "Site deletion is limited to never-published drafts and retains a tombstone for current authorization and receipt replay; deleted sites cannot be listed, edited or exported. Published sites cannot be deleted. Group deletion unlinks live and tombstoned sites and preserves them. Target deletion is blocked by any draft or published reference."
+      parameters: [{"$ref": "#/components/parameters/ID"}, {"$ref": "#/components/parameters/CSRF"}, {"$ref": "#/components/parameters/IngressIdempotency"}]
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              type: "object"
+              additionalProperties: false
+              properties:
+                expected_revision:
+                  type: "integer"
+                  minimum: 1
+              required: ["expected_revision"]
+    get:
+      summary: "Read authorized site draft and published heads"
+      security: [{"session": []}, {"bearer": []}]
+      responses:
+        "200":
+          description: "Success"
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/IngressSite"
+        "400":
+          "$ref": "#/components/responses/Error"
+        "401":
+          "$ref": "#/components/responses/Error"
+        "403":
+          "$ref": "#/components/responses/Error"
+        "409":
+          "$ref": "#/components/responses/Error"
+        "503":
+          "$ref": "#/components/responses/Error"
+      parameters: [{"$ref": "#/components/parameters/ID"}]
+  "/targets":
+    get:
+      summary: "List currently authorized targets"
+      security: [{"session": []}, {"bearer": []}]
+      responses:
+        "200":
+          description: "Success"
+          content:
+            "application/json":
+              schema:
+                type: "object"
+                additionalProperties: false
+                properties:
+                  items:
+                    type: "array"
+                    items:
+                      "$ref": "#/components/schemas/IngressTarget"
+                  limit:
+                    type: "integer"
+                    minimum: 1
+                    maximum: 100
+                  offset:
+                    type: "integer"
+                    minimum: 0
+                    maximum: 100000
+        "400":
+          "$ref": "#/components/responses/Error"
+        "401":
+          "$ref": "#/components/responses/Error"
+        "403":
+          "$ref": "#/components/responses/Error"
+        "409":
+          "$ref": "#/components/responses/Error"
+        "503":
+          "$ref": "#/components/responses/Error"
+      description: "Sorted by resource UUID. Only limit and offset are accepted query fields; unauthorized resources are omitted. Shared targets require authority over every current draft and published reference."
+      parameters: [{"$ref": "#/components/parameters/Limit"}, {"$ref": "#/components/parameters/Offset"}]
+    post:
+      summary: "Save independent target draft head"
+      security: [{"session": []}, {"bearer": []}]
+      responses:
+        "201":
+          description: "Success"
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/IngressRevision"
+        "400":
+          "$ref": "#/components/responses/Error"
+        "401":
+          "$ref": "#/components/responses/Error"
+        "403":
+          "$ref": "#/components/responses/Error"
+        "409":
+          "$ref": "#/components/responses/Error"
+        "503":
+          "$ref": "#/components/responses/Error"
+      description: "Creates require interactive admin. Edits require authority over every draft and published referring site. Site heads and target published head remain unchanged; HTTPS materials explicitly remain unavailable."
+      parameters: [{"$ref": "#/components/parameters/CSRF"}, {"$ref": "#/components/parameters/IngressIdempotency"}]
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              type: "object"
+              additionalProperties: false
+              properties:
+                config:
+                  "$ref": "#/components/schemas/IngressTargetConfig"
+                expected_revision:
+                  type: "integer"
+                  const: 0
+              required: ["config"]
+  "/targets/{id}":
+    delete:
+      summary: "Delete target"
+      security: [{"session": []}, {"bearer": []}]
+      responses:
+        "204":
+          description: "Success without response body"
+        "400":
+          "$ref": "#/components/responses/Error"
+        "401":
+          "$ref": "#/components/responses/Error"
+        "403":
+          "$ref": "#/components/responses/Error"
+        "409":
+          "$ref": "#/components/responses/Error"
+        "503":
+          "$ref": "#/components/responses/Error"
+      description: "Site deletion is limited to never-published drafts and retains a tombstone for current authorization and receipt replay; deleted sites cannot be listed, edited or exported. Published sites cannot be deleted. Group deletion unlinks live and tombstoned sites and preserves them. Target deletion is blocked by any draft or published reference."
+      parameters: [{"$ref": "#/components/parameters/ID"}, {"$ref": "#/components/parameters/CSRF"}, {"$ref": "#/components/parameters/IngressIdempotency"}]
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              type: "object"
+              additionalProperties: false
+              properties:
+                expected_revision:
+                  type: "integer"
+                  minimum: 1
+              required: ["expected_revision"]
+    get:
+      summary: "Read target only after checking all referring site scopes"
+      security: [{"session": []}, {"bearer": []}]
+      responses:
+        "200":
+          description: "Success"
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/IngressTarget"
+        "400":
+          "$ref": "#/components/responses/Error"
+        "401":
+          "$ref": "#/components/responses/Error"
+        "403":
+          "$ref": "#/components/responses/Error"
+        "409":
+          "$ref": "#/components/responses/Error"
+        "503":
+          "$ref": "#/components/responses/Error"
+      parameters: [{"$ref": "#/components/parameters/ID"}]
+    put:
+      summary: "Save independent target draft head"
+      security: [{"session": []}, {"bearer": []}]
+      responses:
+        "200":
+          description: "Success"
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/IngressRevision"
+        "400":
+          "$ref": "#/components/responses/Error"
+        "401":
+          "$ref": "#/components/responses/Error"
+        "403":
+          "$ref": "#/components/responses/Error"
+        "409":
+          "$ref": "#/components/responses/Error"
+        "503":
+          "$ref": "#/components/responses/Error"
+      description: "Creates require interactive admin. Edits require authority over every draft and published referring site. Site heads and target published head remain unchanged; HTTPS materials explicitly remain unavailable."
+      parameters: [{"$ref": "#/components/parameters/ID"}, {"$ref": "#/components/parameters/CSRF"}, {"$ref": "#/components/parameters/IngressIdempotency"}]
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              type: "object"
+              additionalProperties: false
+              properties:
+                config:
+                  "$ref": "#/components/schemas/IngressTargetConfig"
+                expected_revision:
+                  type: "integer"
+                  minimum: 1
+              required: ["config", "expected_revision"]
+  "/groups":
+    get:
+      summary: "List currently authorized groups"
+      security: [{"session": []}, {"bearer": []}]
+      responses:
+        "200":
+          description: "Success"
+          content:
+            "application/json":
+              schema:
+                type: "object"
+                additionalProperties: false
+                properties:
+                  items:
+                    type: "array"
+                    items:
+                      "$ref": "#/components/schemas/IngressGroup"
+                  limit:
+                    type: "integer"
+                    minimum: 1
+                    maximum: 100
+                  offset:
+                    type: "integer"
+                    minimum: 0
+                    maximum: 100000
+        "400":
+          "$ref": "#/components/responses/Error"
+        "401":
+          "$ref": "#/components/responses/Error"
+        "403":
+          "$ref": "#/components/responses/Error"
+        "409":
+          "$ref": "#/components/responses/Error"
+        "503":
+          "$ref": "#/components/responses/Error"
+      description: "Sorted by resource UUID. Only limit and offset are accepted query fields; unauthorized resources are omitted. Shared targets require authority over every current draft and published reference."
+      parameters: [{"$ref": "#/components/parameters/Limit"}, {"$ref": "#/components/parameters/Offset"}]
+    post:
+      summary: "Save site group as interactive administrator"
+      security: [{"session": []}, {"bearer": []}]
+      responses:
+        "201":
+          description: "Success"
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/IngressRevision"
+        "400":
+          "$ref": "#/components/responses/Error"
+        "401":
+          "$ref": "#/components/responses/Error"
+        "403":
+          "$ref": "#/components/responses/Error"
+        "409":
+          "$ref": "#/components/responses/Error"
+        "503":
+          "$ref": "#/components/responses/Error"
+      parameters: [{"$ref": "#/components/parameters/CSRF"}, {"$ref": "#/components/parameters/IngressIdempotency"}]
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              type: "object"
+              additionalProperties: false
+              properties:
+                name:
+                  type: "string"
+                expected_revision:
+                  type: "integer"
+                  const: 0
+              required: ["name"]
+  "/groups/{id}":
+    delete:
+      summary: "Delete group"
+      security: [{"session": []}, {"bearer": []}]
+      responses:
+        "204":
+          description: "Success without response body"
+        "400":
+          "$ref": "#/components/responses/Error"
+        "401":
+          "$ref": "#/components/responses/Error"
+        "403":
+          "$ref": "#/components/responses/Error"
+        "409":
+          "$ref": "#/components/responses/Error"
+        "503":
+          "$ref": "#/components/responses/Error"
+      description: "Site deletion is limited to never-published drafts and retains a tombstone for current authorization and receipt replay; deleted sites cannot be listed, edited or exported. Published sites cannot be deleted. Group deletion unlinks live and tombstoned sites and preserves them. Target deletion is blocked by any draft or published reference."
+      parameters: [{"$ref": "#/components/parameters/ID"}, {"$ref": "#/components/parameters/CSRF"}, {"$ref": "#/components/parameters/IngressIdempotency"}]
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              type: "object"
+              additionalProperties: false
+              properties:
+                expected_revision:
+                  type: "integer"
+                  minimum: 1
+              required: ["expected_revision"]
+    put:
+      summary: "Save site group as interactive administrator"
+      security: [{"session": []}, {"bearer": []}]
+      responses:
+        "200":
+          description: "Success"
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/IngressRevision"
+        "400":
+          "$ref": "#/components/responses/Error"
+        "401":
+          "$ref": "#/components/responses/Error"
+        "403":
+          "$ref": "#/components/responses/Error"
+        "409":
+          "$ref": "#/components/responses/Error"
+        "503":
+          "$ref": "#/components/responses/Error"
+      parameters: [{"$ref": "#/components/parameters/ID"}, {"$ref": "#/components/parameters/CSRF"}, {"$ref": "#/components/parameters/IngressIdempotency"}]
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              type: "object"
+              additionalProperties: false
+              properties:
+                name:
+                  type: "string"
+                expected_revision:
+                  type: "integer"
+                  minimum: 1
+              required: ["name", "expected_revision"]
+  "/sites/{id}/draft":
+    put:
+      summary: "Save site draft without changing published head"
+      security: [{"session": []}, {"bearer": []}]
+      responses:
+        "200":
+          description: "Success"
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/IngressRevision"
+        "400":
+          "$ref": "#/components/responses/Error"
+        "401":
+          "$ref": "#/components/responses/Error"
+        "403":
+          "$ref": "#/components/responses/Error"
+        "409":
+          "$ref": "#/components/responses/Error"
+        "503":
+          "$ref": "#/components/responses/Error"
+      parameters: [{"$ref": "#/components/parameters/ID"}, {"$ref": "#/components/parameters/CSRF"}, {"$ref": "#/components/parameters/IngressIdempotency"}]
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              type: "object"
+              additionalProperties: false
+              properties:
+                expected_revision:
+                  type: "integer"
+                  minimum: 1
+                config:
+                  allOf: [{"$ref": "#/components/schemas/IngressSiteConfig"}, {"type": "object", "required": ["enabled"]}]
+              required: ["expected_revision", "config"]
+  "/sites/{id}/groups":
+    put:
+      summary: "Change site membership as interactive administrator"
+      security: [{"session": []}, {"bearer": []}]
+      responses:
+        "204":
+          description: "Acknowledges the site mutation revision expected_revision + 1, including unchanged memberships. An idempotent replay acknowledges that original mutation revision. Later GET results may have a higher head and must not replace the form guard without the matching reviewed configuration and groups."
+        "400":
+          "$ref": "#/components/responses/Error"
+        "401":
+          "$ref": "#/components/responses/Error"
+        "403":
+          "$ref": "#/components/responses/Error"
+        "409":
+          "$ref": "#/components/responses/Error"
+        "503":
+          "$ref": "#/components/responses/Error"
+      parameters: [{"$ref": "#/components/parameters/ID"}, {"$ref": "#/components/parameters/CSRF"}, {"$ref": "#/components/parameters/IngressIdempotency"}]
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              type: "object"
+              additionalProperties: false
+              properties:
+                expected_revision:
+                  type: "integer"
+                  minimum: 1
+                group_ids:
+                  type: "array"
+                  items:
+                    "$ref": "#/components/schemas/UUID"
+                  maxItems: 100
+              required: ["expected_revision", "group_ids"]
+  /ingress-capabilities:
+    get:
+      operationId: ingressCreationCapabilities
+      security: [{session: []}, {bearer: []}]
+      description: Advisory current-credential creation hints only. Rechecks current session or token, identity watermark and ingress graph in one read scope; no TOTP consumption. Mutations always reauthorize. Site visibility does not imply group creation authority. Only authorized requested group IDs are returned; storage errors are unavailable, never false permissions.
+      parameters:
+        - name: group_ids
+          in: query
+          description: Optional comma-separated unique group UUIDs, at most 100. Unknown or unauthorized IDs are omitted without details.
+          schema: {type: array, maxItems: 100, uniqueItems: true, items: {type: string, format: uuid}}
+          style: form
+          explode: false
+      responses:
+        '200':
+          description: Current advisory creation capabilities
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IngressCreationCapabilities'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /releases/prepare:
+    post:
+      summary: Prepare an immutable scoped release candidate
+      description: Select drafts explicitly with site:<uuid> and target:<uuid> revision keys. Other sites and targets retain published versions. Current credential and complete draft/published reference permissions are checked; full snapshots never appear in the response. Required TLS materials are unavailable until the certificate provider is implemented.
+      security: [{session: []}, {bearer: []}]
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [site_ids, expected]
+              properties:
+                site_ids: {type: array, items: {type: string, format: uuid}}
+                expected:
+                  type: object
+                  propertyNames: {pattern: '^(site|target):[0-9a-f-]{36}$'}
+                  additionalProperties: {type: integer, minimum: 1}
+      responses:
+        '201':
+          description: Immutable candidate prepared; traffic is unchanged
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReleaseCandidate'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /releases/{id}/prepare-historical:
+    post:
+      summary: Prepare a fresh candidate from a verified historical logical version
+      description: Source must have verified succeeded state. Selected logical configurations come from the historical source; expected keys guard current heads. Current groups and security bindings remain authoritative, deleted resources cannot revive, and current draft/published domain claims cannot be reclaimed. Select resources explicitly with site:<uuid> and target:<uuid> revision keys. Other sites and targets retain published versions. Current credential and complete draft/published reference permissions are checked; full snapshots never appear in the response. Required TLS materials are unavailable until the certificate provider is implemented.
+      security: [{session: []}, {bearer: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}, {$ref: '#/components/parameters/CSRF'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [site_ids, expected]
+              properties:
+                site_ids: {type: array, items: {type: string, format: uuid}}
+                expected:
+                  type: object
+                  propertyNames: {pattern: '^(site|target):[0-9a-f-]{36}$'}
+                  additionalProperties: {type: integer, minimum: 1}
+      responses:
+        '201':
+          description: Immutable candidate prepared; traffic is unchanged
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReleaseCandidate'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /releases:
+    get:
+      summary: List currently authorized candidate/version metadata
+      description: Bounded creation-time page. Each item rechecks current credential, grants and references; unauthorized items are omitted. Follow has_more/next_offset even for an empty visible page. At most limit+1 raw rows are read per request; no denied metadata or totals are returned. Offset traversal is bounded to 100000. No configuration body or secret is returned.
+      security: [{session: []}, {bearer: []}]
+      parameters: [{$ref: '#/components/parameters/Limit'}, {$ref: '#/components/parameters/Offset'}]
+      responses:
+        '200':
+          description: Authorized metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, limit, offset, has_more, next_offset]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/ReleaseCandidate'}}
+                  limit: {type: integer}
+                  offset: {type: integer}
+                  has_more: {type: boolean}
+                  next_offset: {type: [integer, "null"], minimum: 1, maximum: 100000}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /releases/{id}:
+    get:
+      summary: Read current authorized release/version metadata
+      security: [{session: []}, {bearer: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses:
+        '200':
+          description: Redacted metadata with queue/effective state kept separate
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReleaseCandidate'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /releases/{id}/diff:
+    get:
+      summary: Read authorized metadata-only revision diff
+      security: [{session: []}, {bearer: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses:
+        '200':
+          description: Revision changes and affected site IDs only; no private configuration or materials
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReleaseDiff'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /releases/{id}/publish:
+    post:
+      summary: Atomically queue a prepared candidate after current revalidation
+      description: Rechecks current credential, grants, references, selected revisions, published base and required security materials. Repeated publication queues this candidate at most once. Queued is not effective; no Nginx apply or published-head advancement occurs here.
+      security: [{session: []}, {bearer: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}, {$ref: '#/components/parameters/CSRF'}]
+      responses:
+        '202':
+          description: Queue accepted idempotently
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, state, effective]
+                properties:
+                  id: {type: string, format: uuid}
+                  state: {const: queued}
+                  effective: {const: false}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  "/sites/{id}/preflight":
+    post:
+      x-read-only: true
+      security: [{session: []}, {bearer: []}]
+      summary: Check a published site's old or new entry without changing DNS or access policy
+      description: Requires current View scope and normal POST CSRF protection. Performs one bounded read-only HTTPS GET with the published Host and SNI. The result separates direct and Cloudflare paths. Unavailable Cloudflare/AOP/client credentials are explicit preconditions and never a positive probe result.
+      parameters:
+        - $ref: "#/components/parameters/CSRF"
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MigrationEntry"
+      responses:
+        "200":
+          description: Read-only probe or explicit policy/provider precondition result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MigrationReport"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+
+components:
+  securitySchemes:
+    session:
+      type: apiKey
+      in: cookie
+      name: __Host-gatebeam
+      description: Secure HttpOnly SameSite=Strict cookie; development uses gatebeam-dev. Mutations require configured Origin and X-CSRF-Token.
+    bearer:
+      type: http
+      scheme: bearer
+      description: High entropy API token. Cannot manage accounts or mint tokens. Mixed cookie and bearer credentials are rejected.
+  parameters:
+    CertificateKind:
+      in: path
+      name: kind
+      required: true
+      schema: {type: string, enum: [spec, account, credential, trust]}
+    IngressIdempotency:
+      name: "Idempotency-Key"
+      in: "header"
+      required: false
+      description: "Optional 1-128 ASCII letters/digits or ._:-. Scoped to current user, credential, method and canonical path for 24 hours. Same normalized command (including expected_revision) replays resource/revision metadata after live scope reauthorization. Different command returns 409. Failed transactions leave no receipt."
+      schema:
+        type: "string"
+        pattern: "^[A-Za-z0-9._:-]{1,128}$"
+        maxLength: 128
+    ID:
+      name: id
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    CSRF:
+      name: X-CSRF-Token
+      in: header
+      description: Required for cookie authenticated mutations. Sensitive actions additionally require fresh single-use totp_code.
+      schema: {type: string}
+    Limit:
+      name: limit
+      in: query
+      schema: {type: integer, minimum: 1, maximum: 100, default: 25}
+    Offset:
+      name: offset
+      in: query
+      schema: {type: integer, minimum: 0, maximum: 100000, default: 0}
+  responses:
+    Error:
+      description: Generic request error, without secrets or driver details
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    StatisticsSeries:
+      type: object
+      properties:
+        Buckets:
+          type: array
+          maxItems: 4096
+          items:
+            type: object
+            properties:
+              Minute: {type: string, format: date-time}
+              SiteID: {type: string, format: uuid}
+              Route: {type: string}
+              Method: {type: string}
+              ConfigID: {type: string}
+              StatusClass: {type: integer}
+              Count: {type: integer}
+              Micros: {type: integer}
+              Bytes: {type: integer}
+              Histogram: {type: array, minItems: 12, maxItems: 12, items: {type: integer}}
+        Count: {type: integer}
+        Micros: {type: integer}
+        Bytes: {type: integer}
+        Histogram: {type: array, minItems: 12, maxItems: 12, items: {type: integer}}
+        P50Micros: {type: integer}
+        P95Micros: {type: integer}
+        IngestedAt: {type: string, format: date-time, description: Zero timestamp if no contributing bucket}
+        Approximate: {type: boolean, const: true}
+    LogQueryRow:
+      type: object
+      additionalProperties: false
+      properties:
+        time: {type: string, format: date-time}
+        site_id: {type: string, format: uuid}
+        request_id: {type: string}
+        route: {type: string}
+        method: {type: string}
+        status: {type: integer}
+        bytes_sent: {type: integer}
+        request_micros: {type: integer}
+        config_id: {type: string}
+    BackupView:
+      type: object
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              id: {type: string}
+              created_at: {type: string, format: date-time}
+              bytes: {type: integer}
+              detail_status: {type: string, enum: [recorded, omitted_for_recovery]}
+              artifact_verification: {type: string, const: required}
+        report_status: {type: string, enum: [recorded, unavailable]}
+        local_report:
+          oneOf:
+            - {$ref: '#/components/schemas/SafeRecoveryReport'}
+            - {type: 'null'}
+    SafeRecoveryReport:
+      type: object
+      additionalProperties: false
+      properties:
+        id: {type: string, format: uuid}
+        artifact_id: {type: string, description: Only recorded after successful artifact Verify}
+        at: {type: string, format: date-time}
+        stage: {type: string, enum: [configuration, verify, stage]}
+        outcome: {type: string, enum: [failed, isolated_staged]}
+        cause: {type: string, enum: [configuration_unavailable, artifact_verification_failed, isolated_stage_failed, manual_activation_required]}
+        business_activated: {type: boolean, const: false}
+    LogQueryFilter:
+      type: object
+      additionalProperties: false
+      required: [SiteIDs, From, To]
+      properties:
+        source: {type: string, enum: [archive, local], default: archive}
+        SiteIDs: {type: array, minItems: 1, maxItems: 100, uniqueItems: true, items: {type: string, format: uuid}}
+        From: {type: string, format: date-time}
+        To: {type: string, format: date-time}
+        Route: {type: string, description: Configured fixed route ordinal/default only}
+        Method: {type: string}
+        ConfigID: {type: string, description: Fixed immutable config digest}
+        Status: {type: integer, description: 0 for all or 100 through 599}
+    LogQueryJob:
+      type: object
+      additionalProperties: false
+      properties:
+        ID: {type: string, format: uuid}
+        State: {type: string, enum: [queued, running, succeeded, failed, cancelled]}
+        Error: {type: string, enum: ['', denied, capacity, timeout, query_failed]}
+        Coverage: {type: string, enum: [local_only, archived_only]}
+        ManifestObjects: {type: integer}
+        ScanBytes: {type: integer}
+        Watermark: {type: integer, description: Archive manifest watermark; local_only uses frozen local objects instead}
+        ExpiresAt: {type: string, format: date-time}
+        Truncated: {type: boolean, description: False; over-limit engine results fail instead of returning truncated success}
+    ExecutionReport:
+      type: object
+      additionalProperties: false
+      properties:
+        stage: {type: string, description: Actual reported bounded executor stage, or unavailable for older/unreported jobs}
+        cause: {type: string, enum: [none, unavailable, authority_or_preparation_failed, compile_failed, stage_failed, native_validation_failed, activation_or_observation_failed, route_verification_failed, confirmation_failed, restore_failed]}
+        updated_at: {type: string, format: date-time}
+        job_state: {type: string, enum: [pending, running, completed, failed, unavailable]}
+        attempt: {type: integer}
+        config_applied: {type: boolean, description: Current database acknowledged runtime receipt; not a live probe}
+        route_verification:
+          type: object
+          description: Present only for current exact artifact/version/generation. Routes are filtered to currently authorized affected closure. Missing or false BusinessVerified remains incomplete. Maintenance/policy refusal is never a healthy backend result.
+          properties:
+            artifact_id: {type: string}
+            version: {type: string}
+            generation: {type: string}
+            checked_at: {type: string, format: date-time}
+            native_verified: {type: boolean}
+            business_verified: {type: boolean}
+            routes: {type: array, items: {type: object, properties: {site_id: {type: string}, site_revision: {type: integer}, target_id: {type: string}, target_revision: {type: integer}, route: {type: string}, host: {type: string}, sni: {type: string}, path: {type: string}, outcome: {type: string}, reason: {type: string}}}}
+    CertificateResource:
+      type: object
+      required: [id, kind, revision, enabled, body]
+      properties:
+        id: {type: string, format: uuid}
+        kind: {type: string, enum: [spec, account, credential, trust]}
+        revision: {type: integer, minimum: 1}
+        enabled: {type: boolean}
+        body: {type: object, description: Validated owning Spec/ProviderAccount/DNSCredential/TrustBundle metadata; never secret payloads}
+    CertificateResourceWrite:
+      type: object
+      additionalProperties: false
+      required: [expected_revision, config, totp_code]
+      properties:
+        expected_revision: {type: integer, minimum: 0, description: Zero for create; exact current revision for replace}
+        config:
+          type: object
+          description: 'spec: names/purpose/method/provider_id/challenge/credential_ids/trust_id/trust_revision; account: provider/email/eab_key_id; credential: zone_id/zone_name; trust: purpose/status_profile/origin_pull_authorized. Unknown fields are rejected by owning DTOs; trust fingerprints are derived from PEM.'
+        secret: {type: string, maxLength: 4096, writeOnly: true, description: New Cloudflare token or raw base64url EAB HMAC; never returned}
+        pem: {type: string, writeOnly: true, description: New public trust PEM for trust resources}
+        totp_code: {type: string, writeOnly: true, pattern: '^[0-9]{6}$'}
+    CertificateResourceView:
+      allOf:
+        - {$ref: '#/components/schemas/CertificateResource'}
+        - type: object
+          properties:
+            lifecycle:
+              type: object
+              properties:
+                versions: {type: array, maxItems: 100, items: {type: object, description: "Immutable public version metadata: ID, spec revision, names, purpose, issuer and issuer-key fingerprints, leaf fingerprint, serial, validity, digest, automatic flag and worker enrollment provider"}}
+                current_version: {type: string, description: Stored version of current management spec revision, not activation evidence}
+                revisions:
+                  type: array
+                  description: Separate retry state for the current management spec revision and each exact current verified binding revision; historical failures are never attributed to the newer draft.
+                  items: {$ref: '#/components/schemas/CertificateRevisionLifecycle'}
+                failures: {type: integer}
+                next_attempt: {type: string, format: date-time}
+                preparing: {type: boolean}
+                preparation_failures: {type: integer}
+                preparation_next_attempt: {type: string, format: date-time}
+                active: {type: array, items: {$ref: '#/components/schemas/VerifiedMaterialBinding'}}
+    CertificateRevisionLifecycle:
+      type: object
+      required: [revision, failures, preparing]
+      properties:
+        revision: {type: integer, minimum: 1}
+        current_version: {type: string, description: Stored version for this immutable spec revision}
+        failures: {type: integer, minimum: 0}
+        next_attempt: {type: string, format: date-time}
+        preparing: {type: boolean}
+    VerifiedMaterialBinding:
+      type: object
+      description: Exact immutable material identity recorded in the same final verified deployment transaction. Empty legacy/current receipt does not imply active. Historical published spec revisions may remain active while a newer current management revision is pending.
+      properties:
+        spec_revision: {type: integer}
+        version_id: {type: string}
+        digest: {type: string}
+        artifact_id: {type: string}
+        version: {type: string}
+        generation: {type: string}
+        verified_at: {type: string, format: date-time}
+    PKIManagementView:
+      type: object
+      properties:
+        directories: {type: object, additionalProperties: {type: string, format: uri}, description: Server/client standard ACME directories from trusted ca_origin}
+        enrollments: {type: array, maxItems: 1000, items: {type: object, description: Grant ID, principal exact names/purpose/directory/expiry/disabled, binding_state and binding_expires only}}
+        certificates: {type: array, maxItems: 1000, items: {type: object, description: Issuer/serial/principal/names/purpose/validity and authoritative revoked_at/reason only}}
+    MigrationEntry:
+      type: object
+      additionalProperties: false
+      required: [role, mode, address, path]
+      properties:
+        role: {type: string, enum: [old, new]}
+        mode: {type: string, enum: [direct, cloudflare]}
+        address:
+          type: string
+          description: Literal IPv4 or bracketed IPv6 address with the explicit TLS port; control, metadata, loopback and link-local addresses are refused.
+          examples: ["203.0.113.10:443", "[2001:db8::10]:8443"]
+        domain:
+          type: string
+          description: One exact published domain; defaults to the first published domain. Used independently for HTTP Host and TLS SNI verification.
+        path:
+          type: string
+          maxLength: 2048
+          pattern: '^/[^?#]*$'
+          description: Operator-selected read-only GET path; no query, fragment, authority or request body.
+    MigrationReport:
+      type: object
+      required: [site_id, revision, entry, ready, result]
+      properties:
+        site_id: {type: string, format: uuid}
+        revision: {type: integer, format: int64}
+        entry:
+          $ref: "#/components/schemas/MigrationEntry"
+        ready: {type: boolean}
+        result: {type: string, enum: [passed, failed, policy_refused, unavailable]}
+        reason:
+          type: string
+          enum: [cloudflare_provider_unavailable, cloudflare_aop_or_client_certificate_required, tls_or_http_probe_failed]
+    ReleaseChange:
+      type: object
+      additionalProperties: false
+      required: [kind, id, before, after, fields]
+      properties:
+        fields: {type: array, items: {type: string}, description: Changed top-level configuration keys only; all values redacted}
+        kind: {type: string, enum: [site, target]}
+        id: {type: string, format: uuid}
+        before: {type: integer, minimum: 0}
+        after: {type: integer, minimum: 1}
+    ReleaseDiff:
+      type: object
+      additionalProperties: false
+      required: [id, input_digest, affected_site_ids, changes]
+      properties:
+        id: {type: string, format: uuid}
+        input_digest: {type: string, pattern: '^[0-9a-f]{64}$'}
+        affected_site_ids: {type: array, items: {type: string, format: uuid}}
+        changes: {type: array, items: {$ref: '#/components/schemas/ReleaseChange'}}
+    ReleaseCandidate:
+      type: object
+      additionalProperties: false
+      required: [id, input_digest, affected_site_ids, changes, state, effective]
+      properties:
+        id: {type: string, format: uuid}
+        input_digest: {type: string, pattern: '^[0-9a-f]{64}$'}
+        affected_site_ids: {type: array, items: {type: string, format: uuid}}
+        changes: {type: array, items: {$ref: '#/components/schemas/ReleaseChange'}}
+        state: {type: string, enum: [prepared, queued, preparing, validated, applying, verifying, succeeded, failed, restoring, restored, restore_failed], description: Authoritative persisted release state. Current executor may retain queued until a terminal receipt; intermediate execution phase and typed failure cause are unavailable unless explicitly reported.}
+        effective: {type: boolean, description: This is the current database-acknowledged verified release, not a live process probe; queue submission is false}
+        execution: {$ref: '#/components/schemas/ExecutionReport'}
+        observed_version: {type: string, description: Last acknowledged native version probe for this release; empty before execution}
+        restored_version: {type: string, description: Recovery version metadata. Only explicit state restored confirms verified restoration; restore_failed may retain an unverified observed version. Never infer recovery success from a nonempty field.}
+    Error:
+      type: object
+      required: [code, message, request_id]
+      properties:
+        code: {type: string}
+        message: {type: string}
+        request_id: {type: string}
+    UUID: {type: string, format: uuid}
+    Role: {type: string, enum: [readonly, editor, publisher, admin]}
+    Action: {type: string, enum: [view, edit, publish]}
+    Grant:
+      type: object
+      required: [kind, resource_id]
+      properties:
+        kind: {type: string, enum: [site, group]}
+        resource_id: {type: string, format: uuid}
+    Actor:
+      type: object
+      required: [user_id, role, auth_version, credential_kind, credential_id]
+      properties:
+        user_id: {type: string, format: uuid}
+        role: {$ref: "#/components/schemas/Role"}
+        auth_version: {type: integer, format: int64}
+        credential_kind: {type: string, enum: [session, token]}
+        credential_id: {type: string, format: uuid}
+    Account:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        role: {$ref: "#/components/schemas/Role"}
+        state: {type: string, enum: [pending, active, disabled]}
+        auth_version: {type: integer, format: int64}
+    Token:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        account_id: {type: string, format: uuid}
+        actions: {type: array, items: {$ref: "#/components/schemas/Action"}}
+        site_ids: {type: array, items: {type: string, format: uuid}}
+        expires: {type: string, format: date-time}
+        revoked: {type: boolean}
+    IssuedToken:
+      allOf:
+        - $ref: "#/components/schemas/Token"
+        - type: object
+          required: [token]
+          properties:
+            token: {type: string, description: Shown only in this successful creation response; persist securely.}
+    Audit:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        actor_id: {type: string, format: uuid}
+        action: {type: string}
+        occurred_at: {type: string, format: date-time}
+    LoginChallenge:
+      type: object
+      properties:
+        challenge_id: {type: string}
+        expires: {type: string, format: date-time}
+    Enrollment:
+      type: object
+      properties:
+        invite_id: {type: string}
+        provisioning_uri: {type: string}
+        expires: {type: string, format: date-time}
+    RecoveryCodes:
+      type: object
+      properties:
+        recovery_codes: {type: array, items: {type: string}}
+    Session:
+      type: object
+      properties:
+        actor: {$ref: "#/components/schemas/Actor"}
+        csrf_token: {type: string}
+        expires: {type: string, format: date-time}
+
+    IngressRevision:
+      type: "object"
+      additionalProperties: false
+      properties:
+        resource_id:
+          "$ref": "#/components/schemas/UUID"
+        number:
+          type: "integer"
+          minimum: 1
+      required: ["resource_id", "number"]
+    IngressMaterialRef:
+      type: "object"
+      additionalProperties: false
+      properties:
+        id:
+          "$ref": "#/components/schemas/UUID"
+        revision:
+          type: "integer"
+          minimum: 1
+        status:
+          type: "string"
+          enum: ["unavailable"]
+          description: "P5 is not yet available. No TLS readiness or material is implied."
+      required: ["id", "revision", "status"]
+    IngressTargetRef:
+      type: "object"
+      additionalProperties: false
+      properties:
+        id:
+          "$ref": "#/components/schemas/UUID"
+    IngressRate:
+      type: "object"
+      additionalProperties: false
+      properties:
+        requests_per_second: {type: integer, minimum: 0, maximum: 1000000}
+        burst: {type: integer, minimum: 0, maximum: 1000000}
+        connections: {type: integer, minimum: 0, maximum: 1000000}
+        status: {type: integer, enum: [429, 503]}
+    IngressRoute:
+      type: "object"
+      additionalProperties: false
+      properties:
+        match:
+          type: "string"
+          enum: ["exact", "prefix"]
+        path:
+          type: "string"
+          maxLength: 2048
+          pattern: "^/"
+        rate:
+          "$ref": "#/components/schemas/IngressRate"
+        strip_prefix:
+          type: "boolean"
+        target:
+          "$ref": "#/components/schemas/IngressTargetRef"
+      required: ["match", "path", "target"]
+    IngressCreationCapabilities:
+      type: object
+      additionalProperties: false
+      required: [create_site_group_ids, create_ungrouped_site, create_target, manage_groups]
+      properties:
+        create_site_group_ids: {type: array, maxItems: 100, items: {type: string, format: uuid}}
+        create_ungrouped_site: {type: boolean}
+        create_target: {type: boolean}
+        manage_groups: {type: boolean}
+    IngressSiteConfig:
+      type: "object"
+      additionalProperties: false
+      properties:
+        enabled:
+          type: "boolean"
+          description: "Defaults true only when omitted during creation. Full draft PUT requires an explicit boolean; false stages deactivation without changing published traffic."
+        domains:
+          type: "array"
+          items:
+            type: "string"
+            maxLength: 253
+          maxItems: 100
+          minItems: 1
+          description: "Normalized lowercase ASCII names; global uniqueness includes draft and published heads."
+        default_target:
+          "$ref": "#/components/schemas/IngressTargetRef"
+        routes:
+          type: "array"
+          items:
+            "$ref": "#/components/schemas/IngressRoute"
+          maxItems: 500
+        maintenance:
+          type: "object"
+          additionalProperties: false
+          properties:
+            enabled:
+              type: "boolean"
+            status:
+              type: "integer"
+              minimum: 400
+              maximum: 599
+            message:
+              type: "string"
+              maxLength: 1024
+        cloudflare:
+          type: "object"
+          additionalProperties: false
+          properties:
+            mode:
+              type: "string"
+              enum: ["off", "proxied"]
+            trusted_proxy_networks:
+              type: "array"
+              items:
+                type: "string"
+              maxItems: 1000
+            require_origin_pull:
+              type: "boolean"
+        entry_certificate:
+          "$ref": "#/components/schemas/IngressMaterialRef"
+        client_verification:
+          type: "object"
+          additionalProperties: false
+          properties:
+            mode:
+              type: "string"
+              enum: ["off", "optional", "required"]
+            trust:
+              "$ref": "#/components/schemas/IngressMaterialRef"
+            depth:
+              type: "integer"
+              minimum: 0
+              maximum: 10
+            revocation:
+              type: "string"
+              enum: ["", "crl", "ocsp", "crl_ocsp"]
+        access:
+          type: "object"
+          additionalProperties: false
+          properties:
+            allow:
+              type: "array"
+              items:
+                type: "string"
+              maxItems: 1000
+            deny:
+              type: "array"
+              items:
+                type: "string"
+              maxItems: 1000
+            deny_paths:
+              type: "array"
+              items:
+                type: "string"
+        rate:
+          type: "object"
+          additionalProperties: false
+          properties:
+            requests_per_second:
+              type: "integer"
+              minimum: 0
+              maximum: 1000000
+            burst:
+              type: "integer"
+              minimum: 0
+              maximum: 1000000
+            connections:
+              type: "integer"
+              minimum: 0
+              maximum: 1000000
+            status:
+              type: "integer"
+              enum: [429, 503]
+        connection:
+          type: "object"
+          additionalProperties: false
+          properties:
+            connect_timeout_seconds:
+              type: "integer"
+              minimum: 0
+              maximum: 300
+            read_timeout_seconds:
+              type: "integer"
+              minimum: 0
+              maximum: 3600
+            send_timeout_seconds:
+              type: "integer"
+              minimum: 0
+              maximum: 3600
+            max_body_bytes:
+              type: "integer"
+              minimum: 0
+              maximum: 1099511627776
+            websocket:
+              type: "boolean"
+            sse:
+              type: "boolean"
+            buffer_responses:
+              type: "boolean"
+      required: ["domains"]
+    IngressTargetConfig:
+      type: "object"
+      additionalProperties: false
+      properties:
+        name:
+          type: "string"
+          minLength: 1
+          maxLength: 128
+        protocol:
+          type: "string"
+          enum: ["http", "https"]
+        members:
+          type: "array"
+          items:
+            type: "object"
+            additionalProperties: false
+            properties:
+              address:
+                type: "string"
+                description: "Connection FQDN or explicitly allowed private address; DNS resolution/worker validation is deferred to runtime implementation."
+              port:
+                type: "integer"
+                minimum: 1
+                maximum: 65535
+              weight:
+                type: "integer"
+                minimum: 1
+                maximum: 1000
+              tls_name:
+                type: "string"
+                description: "SNI and verification name, separate from connection address and HTTP Host."
+            required: ["address", "port", "weight"]
+          maxItems: 100
+          minItems: 1
+        http_host:
+          type: "string"
+          description: "Empty preserves business Host. This field is independent of address and TLS name."
+        tls_server_name_mode:
+          type: string
+          enum: ["", send, verify_only]
+          description: Default sends SNI. verify_only keeps TLS hostname verification but omits wire SNI; requires a client certificate and a dedicated uniformly protected native mTLS listener.
+        tls_name_mode:
+          type: "string"
+          enum: ["", "fixed", "member"]
+        tls_name:
+          type: "string"
+        trust:
+          "$ref": "#/components/schemas/IngressMaterialRef"
+        client_certificate:
+          "$ref": "#/components/schemas/IngressMaterialRef"
+        allowed_networks:
+          type: "array"
+          items:
+            type: "string"
+          maxItems: 100
+          minItems: 1
+          description: "Explicit subnets of RFC1918 or IPv6 ULA only; protected resolved targets must be rejected at runtime."
+        health:
+          type: "object"
+          additionalProperties: false
+          properties:
+            enabled:
+              type: "boolean"
+            http_host:
+              type: "string"
+            path:
+              type: "string"
+            interval_seconds:
+              type: "integer"
+              minimum: 0
+              maximum: 3600
+            timeout_seconds:
+              type: "integer"
+              minimum: 0
+              maximum: 60
+            healthy_threshold:
+              type: "integer"
+              minimum: 0
+              maximum: 100
+            unhealthy_threshold:
+              type: "integer"
+              minimum: 0
+              maximum: 100
+      required: ["name", "protocol", "members", "allowed_networks"]
+    IngressSite:
+      type: "object"
+      additionalProperties: false
+      properties:
+        id:
+          "$ref": "#/components/schemas/UUID"
+        name:
+          type: "string"
+        group_ids:
+          type: "array"
+          items:
+            "$ref": "#/components/schemas/UUID"
+          maxItems: 100
+        revision:
+          type: "integer"
+          minimum: 1
+        draft:
+          "$ref": "#/components/schemas/IngressSiteConfig"
+        published_revision:
+          type: "integer"
+          minimum: 0
+        published:
+          "$ref": "#/components/schemas/IngressSiteConfig"
+      required: ["id", "name", "group_ids", "revision", "draft", "published_revision"]
+    IngressTarget:
+      type: "object"
+      additionalProperties: false
+      properties:
+        id:
+          "$ref": "#/components/schemas/UUID"
+        revision:
+          type: "integer"
+          minimum: 1
+        config:
+          "$ref": "#/components/schemas/IngressTargetConfig"
+        published_revision:
+          type: "integer"
+          minimum: 0
+        published:
+          "$ref": "#/components/schemas/IngressTargetConfig"
+      required: ["id", "revision", "config", "published_revision"]
+    IngressGroup:
+      type: "object"
+      additionalProperties: false
+      properties:
+        id:
+          "$ref": "#/components/schemas/UUID"
+        name:
+          type: "string"
+        revision:
+          type: "integer"
+          minimum: 1
+      required: ["id", "name", "revision"]

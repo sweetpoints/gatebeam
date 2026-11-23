@@ -1,0 +1,6 @@
+export interface CertificateVersion { id:string; spec_id:string; spec_revision:number; names:string[]; purpose:string; issuer:string; not_before:string; not_after:string; automatic:boolean }
+export interface Resource { id:string; kind:string; revision:number; enabled:boolean; body:Config; lifecycle:{revisions?:{revision:number;current_version?:string;failures:number;next_attempt?:string;preparing:boolean}[];active?:{spec_revision:number;version_id:string;artifact_id:string;version:string;generation:string;verified_at:string}[];versions:CertificateVersion[];current_version?:string;failures:number;next_attempt?:string;preparing:boolean;preparation_failures:number;preparation_next_attempt?:string} }
+export interface Config {names?:string[];purpose?:string;method?:string;provider_id?:string;challenge?:string;credential_ids?:string[];trust_id?:string;trust_revision?:number;provider?:string;email?:string;eab_key_id?:string;zone_id?:string;zone_name?:string;status_profile?:string;origin_pull_authorized?:boolean;fingerprints?:string[]}
+export const labels:Record<string,string>={spec:'证书规格',account:'CA 账号',credential:'Cloudflare DNS 凭据',trust:'信任包'};
+export function title(r:Resource){return r.body.names?.join(', ')||r.body.zone_name||`${r.body.provider||r.body.purpose} · ${r.id}`}
+export const when=(v?:string)=>v?new Date(v).toLocaleString():'无';

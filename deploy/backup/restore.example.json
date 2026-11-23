@@ -1,0 +1,1 @@
+{"mode":"backup-restore","environment":"production","database_file":"/run/gatebeam/local-isolated-recovery-database","recovery_identity_file":"/offline/recovery.agekey","recovery_source":"/offline/verified-download.age","recovery_directory":"/offline/new-recoveries","recovery_report_directory":"/offline/safe-recovery-reports"}

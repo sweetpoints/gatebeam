@@ -1,0 +1,7 @@
+{
+  "Endpoint": "https://ACCOUNT_ID.r2.cloudflarestorage.com",
+  "Bucket": "gatebeam-history",
+  "Region": "auto",
+  "AccessKey": "REPLACE_WITH_SCOPED_ACCESS_KEY_ID",
+  "SecretKey": "REPLACE_WITH_SCOPED_SECRET_ACCESS_KEY"
+}

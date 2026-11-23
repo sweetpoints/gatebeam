@@ -1,0 +1,52 @@
+{
+  "nodes": 2,
+  "roles_per_node": 5,
+  "package_timeout_seconds": 300,
+  "roles": {
+    "nginx": {
+      "memory_bytes": 536870912,
+      "cpu": 1,
+      "pids": 128
+    },
+    "management": {
+      "memory_bytes": 268435456,
+      "cpu": 1,
+      "pids": 64
+    },
+    "background-jobs": {
+      "memory_bytes": 268435456,
+      "cpu": 0.5,
+      "pids": 64
+    },
+    "internal-ca": {
+      "memory_bytes": 268435456,
+      "cpu": 1,
+      "pids": 64
+    },
+    "log-query": {
+      "memory_bytes": 536870912,
+      "cpu": 1,
+      "pids": 64
+    }
+  },
+  "database": {
+    "memory_bytes": 536870912,
+    "cpu": 1,
+    "pids": 128
+  },
+  "router": {
+    "memory_bytes": 134217728,
+    "cpu": 0.5,
+    "pids": 64
+  },
+  "backend": {
+    "memory_bytes": 67108864,
+    "cpu": 0.5,
+    "pids": 64
+  },
+  "object_store": {
+    "memory_bytes": 536870912,
+    "cpu": 1,
+    "pids": 128
+  }
+}
