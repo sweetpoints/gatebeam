@@ -75,7 +75,20 @@ jobs:
           node --test scripts/test_install_pnpm.mjs
 
       - name: Run all twenty gates against local images
-        run: sh scripts/check-system.sh full
+        # Fixture containers use production UIDs on bind mounts. The host
+        # harness must read their private receipts and remove the test data.
+        run: |
+          sudo --non-interactive env \
+            PATH="$PATH" HOME="$HOME" CI="$CI" \
+            CI_COMMIT_SHA="$CI_COMMIT_SHA" GATEBEAM_TARGET_ARCH="$GATEBEAM_TARGET_ARCH" \
+            GATEBEAM_ACCEPTANCE_EXECUTION="$GATEBEAM_ACCEPTANCE_EXECUTION" \
+            GATEBEAM_ACCEPTANCE_KEEP_GOING="$GATEBEAM_ACCEPTANCE_KEEP_GOING" \
+            GATEBEAM_TEST_OPENSSL="$GATEBEAM_TEST_OPENSSL" GATEBEAM_BROWSER_CHANNEL="$GATEBEAM_BROWSER_CHANNEL" \
+            GOTOOLCHAIN="$GOTOOLCHAIN" PNPM_CONFIG_MANAGE_PACKAGE_MANAGER_VERSIONS="$PNPM_CONFIG_MANAGE_PACKAGE_MANAGER_VERSIONS" \
+            COMPOSE_ANSI="$COMPOSE_ANSI" COMPOSE_PROGRESS="$COMPOSE_PROGRESS" \
+            PYTHONDONTWRITEBYTECODE="$PYTHONDONTWRITEBYTECODE" \
+            GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$PWD" \
+            sh scripts/check-system.sh full
 
       - name: Verify complete same-commit acceptance
         run: |
