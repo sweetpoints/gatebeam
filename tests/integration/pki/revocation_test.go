@@ -26,6 +26,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,6 +36,11 @@ import (
 	"testing"
 	"time"
 )
+
+func ocspGETURL(origin string, request []byte) string {
+	// RFC 6960 A.1 URL-encodes the standard Base64 payload in the path.
+	return origin + "/ocsp/" + url.QueryEscape(base64.StdEncoding.EncodeToString(request))
+}
 
 // This fixture exercises unmodified Nginx's client-certificate OCSP separately
 // from proxy_ssl_crl for its upstream server. All state comes from real PG.
@@ -303,7 +309,7 @@ func TestNativeNginxRevocationAndResumption(t *testing.T) {
 		if e != nil {
 			t.Fatal(e)
 		}
-		response, e := (&http.Client{Timeout: time.Second}).Get(base + "/ocsp/" + base64.StdEncoding.EncodeToString(request))
+		response, e := (&http.Client{Timeout: time.Second}).Get(ocspGETURL(base, request))
 		if e != nil {
 			t.Fatal(e)
 		}
@@ -320,7 +326,7 @@ func TestNativeNginxRevocationAndResumption(t *testing.T) {
 		if e != nil {
 			t.Fatal(e)
 		}
-		response, e = (&http.Client{Timeout: time.Second}).Get(base + "/ocsp/" + base64.StdEncoding.EncodeToString(parentRequest))
+		response, e = (&http.Client{Timeout: time.Second}).Get(ocspGETURL(base, parentRequest))
 		if e != nil {
 			t.Fatal(e)
 		}
@@ -430,7 +436,7 @@ func TestNativeNginxRevocationAndResumption(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	response, e := clientHTTP.Get(localStatusOrigin + "/ocsp/" + base64.StdEncoding.EncodeToString(requestDER))
+	response, e := clientHTTP.Get(ocspGETURL(localStatusOrigin, requestDER))
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -448,7 +454,7 @@ func TestNativeNginxRevocationAndResumption(t *testing.T) {
 	}
 	// A signed but older root CRL cannot reverse an observed revocation.
 	write(t, filepath.Join(online, "root.crl.der"), rootCRL)
-	response, e = clientHTTP.Get(localStatusOrigin + "/ocsp/" + base64.StdEncoding.EncodeToString(requestDER))
+	response, e = clientHTTP.Get(ocspGETURL(localStatusOrigin, requestDER))
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -461,7 +467,7 @@ func TestNativeNginxRevocationAndResumption(t *testing.T) {
 	write(t, filepath.Join(offline, "index.txt"), nil)
 	offlineRun("ca", "-config", "openssl.cnf", "-gencrl", "-out", "forgotten.pem")
 	offlineRun("crl", "-in", "forgotten.pem", "-outform", "DER", "-out", filepath.Join(online, "root.crl.der"))
-	response, e = clientHTTP.Get(localStatusOrigin + "/ocsp/" + base64.StdEncoding.EncodeToString(requestDER))
+	response, e = clientHTTP.Get(ocspGETURL(localStatusOrigin, requestDER))
 	if e != nil {
 		t.Fatal(e)
 	}
