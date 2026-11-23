@@ -264,6 +264,12 @@ func TestOwnedExecutorChild(t *testing.T) {
 		t.Logf("owned executor applied step=%s elapsed=%s", s.Kind, time.Since(started).Round(time.Millisecond))
 	}
 	x := upgrade.Executor{Store: ops.Store, Operations: ops, ExecutorInstance: in.Plan.ExecutorInstance}
+	// The publication receipt does not wait for the edge's periodic data
+	// readiness check. Establish this fixture prerequisite before the executor's
+	// one-shot upgrade precheck so the test can exercise the interruption cut.
+	for _, n := range l.Nodes {
+		n.Wait(t, "nginx", lifecycle.Data)
+	}
 	t.Log("owned executor starting real upgrade before fault injection")
 	err := x.Run(t.Context(), in.Plan)
 	t.Fatal("child stopped before post-effect cut", err)
