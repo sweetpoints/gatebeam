@@ -81,11 +81,19 @@ func (c authority) crl(t *testing.T) []byte {
 }
 func command(t *testing.T, args ...string) string {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	return commandWithTimeout(t, 20*time.Second, args...)
+}
+
+func commandWithTimeout(t *testing.T, timeout time.Duration, args ...string) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	out, e := cmd.CombinedOutput()
 	if e != nil {
+		if ctx.Err() != nil {
+			t.Fatalf("%v: %v after %s\n%s", args, ctx.Err(), timeout, out)
+		}
 		t.Fatalf("%v: %v\n%s", args, e, out)
 	}
 	return strings.TrimSpace(string(out))
@@ -124,15 +132,25 @@ func setupLifetime(t *testing.T, seconds int) *fixture {
 		t.Fatalf("build fixture: %v %s", e, out)
 	}
 	f := &fixture{root: root, name: fmt.Sprintf("gatebeam-i3-%d", time.Now().UnixNano()), clients: map[string]tls.Certificate{}}
-	command(t, "docker", "run", "-d", "--name", f.name, "--memory", "128m", "--cpus", "0.5", "--pids-limit", "64", "--log-opt", "max-size=1m", "--log-opt", "max-file=1", "-p", "127.0.0.1::8443", "-v", root+":/fixture:ro", image, "sh", "-c", fmt.Sprintf("sleep %d", seconds))
 	t.Cleanup(func() {
-		if t.Failed() {
-			t.Log(command(t, "docker", "logs", f.name))
-			t.Log(string(mustRead(filepath.Join(f.root, "nginx.conf"))))
-		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		exec.CommandContext(ctx, "docker", "rm", "-f", f.name).Run()
+	})
+	// Creating the container includes Docker's mount and network setup.
+	commandWithTimeout(t, 45*time.Second, "docker", "run", "-d", "--name", f.name, "--memory", "128m", "--cpus", "0.5", "--pids-limit", "64", "--log-opt", "max-size=1m", "--log-opt", "max-file=1", "-p", "127.0.0.1::8443", "-v", root+":/fixture:ro", image, "sh", "-c", fmt.Sprintf("sleep %d", seconds))
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		logs, err := exec.CommandContext(ctx, "docker", "logs", f.name).CombinedOutput()
+		if err != nil {
+			t.Logf("read %s logs: %v", f.name, err)
+		}
+		t.Log(string(logs))
+		t.Log(string(mustRead(filepath.Join(f.root, "nginx.conf"))))
 	})
 	f.ip = command(t, "docker", "inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", f.name)
 	f.port = strings.TrimPrefix(command(t, "docker", "port", f.name, "8443/tcp"), "127.0.0.1:")
