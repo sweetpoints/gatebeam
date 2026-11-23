@@ -58,6 +58,7 @@ jobs:
       - name: Prepare native acceptance dependencies
         run: |
           test "$(git rev-parse HEAD)" = "$CI_COMMIT_SHA"
+          python3 scripts/product_version.py
           test "$(go env GOHOSTOS)" = linux
           test "$(go env GOHOSTARCH)" = "$GATEBEAM_TARGET_ARCH"
           sudo apt-get update -qq
@@ -97,11 +98,14 @@ jobs:
           from pathlib import Path
           from acceptance_phases import snapshot_images
           from ci import load, validate_receipt
+          from product_version import read_version
 
           result = load(Path('.work/system-acceptance/results.json'))
           manifest = load(Path('.work/artifacts/manifest.json'))
           if result.get('execution') != 'native':
               raise SystemExit('expected native acceptance')
+          if manifest.get('product_version') != read_version():
+              raise SystemExit('build version differs from VERSION')
           validate_receipt(result, manifest, os.environ['CI_COMMIT_SHA'], os.environ['GATEBEAM_TARGET_ARCH'])
           for image in snapshot_images():
               tag = f"gatebeam-{image['role']}:local"

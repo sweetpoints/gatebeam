@@ -16,6 +16,11 @@ GitHub Actions runs the complete acceptance suite on native Linux amd64 and
 arm64 for pull requests and pushes to `main`. Both jobs build and test their
 images locally.
 
+The root [VERSION](VERSION) file declares the Gatebeam product version using
+[SemVer 2.0.0](https://semver.org/). Set it explicitly when preparing a release.
+The declaration includes any pre-release and build metadata and is recorded
+verbatim in the image version label and build manifest.
+
 Deployment files have separate purposes:
 
 | File | Purpose |
