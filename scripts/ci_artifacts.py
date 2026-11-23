@@ -10,7 +10,7 @@ from ci_environment import IMAGE
 from ci_oci import inspect_oci
 
 PROGRAMS=('gatebeam','gatebeam-admin','gatebeam-deploy','gatebeam-deploy-host')
-ALIASES=('gatebeam-host','gatebeam-web-local','gatebeam-current-host')
+ALIASES=('gatebeam-host','gatebeam-web-local')
 
 
 def checked_file(path,digest):

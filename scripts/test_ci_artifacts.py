@@ -61,8 +61,8 @@ class BuildArtifactTests(unittest.TestCase):
   m=self.module()
   with tempfile.TemporaryDirectory() as td:
    root=Path(td);folder,context,bundle=self.fixture(root);target=root/'programs'
-   m.test_inputs(folder,context,sha_file(folder/'bundle.json'),target,names=('gatebeam',),aliases=('gatebeam-host','gatebeam-web-local','gatebeam-current-host'))
-   for name in ('gatebeam','gatebeam-host','gatebeam-web-local','gatebeam-current-host'):
+   m.test_inputs(folder,context,sha_file(folder/'bundle.json'),target,names=('gatebeam',),aliases=('gatebeam-host','gatebeam-web-local'))
+   for name in ('gatebeam','gatebeam-host','gatebeam-web-local'):
     self.assertEqual(sha_file(target/name),bundle['programs']['gatebeam'])
    with self.assertRaises(ValueError):m.test_inputs(folder,context,sha_file(folder/'bundle.json'),target,names=(),aliases=('../escape',))
 

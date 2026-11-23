@@ -98,13 +98,11 @@ Cloudflare DNS 仍由管理员手工切换，可保留两条入口记录，让�
 
 若新容器已完成更新，但第一轮只读验证明确失败，此时管理上游和两个 LB 成员尚未加回，执行器会记录补偿步骤，仅恢复该节点原先批准的镜像，重新完成 API/私网/公网验证、加入和观察，最终批次标为 `rolled_back` 并返回非零结果，另一节点不升级。原计划与补偿步骤同时保留。更新命令的未知结果不能按“验证失败”处理；回退过程本身失败也会暂停。已经重新加回后的观察或基础设施故障会保留健康节点并暂停，需核对具体外部结果后处理。所有回退保留本地证书、撤销和时钟下限，不自动恢复旧 PG 或执行 goose down。
 
-实际预检还会在无网络、只读文件系统、无秘密/持久卷、cap-drop-ALL 的一次性容器中调用当前与候选固定镜像的 `gatebeam --runtime-contract`。输出必须声明本次 schema/角色迁移范围、runtime protocol 1、boot format 1 和 configuration format 2；不能仅凭 inventory 的兼容性确认绕过。该命令在读取任何配置之前返回编译清单。缺少该命令或不满足契约的早期开发镜像不属于自动升级及回退允许清单，应先完成受控桥接程序迁移。
+实际预检还会在无网络、只读文件系统、无秘密/持久卷、cap-drop-ALL 的一次性容器中调用当前与候选固定镜像的 `gatebeam --runtime-contract`。输出必须声明本次 schema/角色迁移范围、runtime protocol 1、boot format 1 和 configuration format 2；不能仅凭 inventory 的兼容性确认绕过。该命令在读取任何配置之前返回编译清单。缺少该命令或不满足契约的镜像会被预检拒绝。
 
 实际云端执行还必须提供单节点峰值资格记录。可在 intent 增加 `capacity_report_file` 指向受保护 JSON；其内容为 `kind:production`、真实 `required_peak_rps` 和 `trials`。每份 trial 绑定 `node{id,epoch}`、完整 GCP `machine_type` 资源名、五个角色的精确 `images`、每角色 `limits{memory_bytes,nano_cpus,pids}`、`duration_seconds`、`requests`、`errors`、`p95_millis` 和实际 `workload` 描述。两节点的当前及候选镜像组合均须覆盖；相同组合可复用同一 trial。每份至少 10 秒、零错误，测得成功率须达到声明峰值。工具固化规范化内容摘要，并在云端重新核对 VM 类型、宿主实际容器资源限制和固定镜像。该记录必须来自可信的实际测量及人工核对，工具不会凭一个“兼容”确认推断真实业务峰值。没有记录时仍可查看 dry-run 计划，但实际执行会在读取 DB 配置/进行云操作之前被拒绝。
 
-本地完整双节点关卡为：`sh scripts/check-multinode.sh --manifest .work/artifacts/manifest.json --nodes tests/fixtures/multinode/config.json --budget tests/fixtures/multinode/budget.json`。先执行 `sh scripts/build-system.sh` 取得五个固定预构建镜像及 manifest；关卡核对真实镜像 ID、二进制摘要、离线契约和不变资源预算，不用替换二进制绕过最终镜像。可用 `--suite runtime|control|upgrade|migration|capacity` 单独运行；每个场景拥有独立外部测试 PG，使用统一数据库批次的300秒整包累计保护（命令315秒），由完整验收执行器运行时，11个场景仍共享600秒阶段保护；这些是 CI 总钟，明确的请求、故障、续期及查询功能期限和角色资源预算保留，缺场景不能以“无测试”通过。节点输入仅接受维护中的隔离双 Compose 模板，不接受生产主机。辅助 S3 使用固定 RustFS 测试镜像及一次性凭据，不代表已验收 Cloudflare IAM。
-
-迁移场景通过 `scripts/build-schema22-fixture.sh` 使用仓库内带 SHA-256 校验的 schema 22 源码夹具构建原程序。解包和编译在忽略的 `.work` 内完成。演练覆盖原程序在 schema22 及 goose 扩展后的真实账号/站点读写、当前协议零桥接 API、原持有人角色密文重封装和 B 验证、两节点最终协议一初始化与启用。原始22程序不支持协议一启动契约，不能作为双节点启用后的回退镜像。
+本地完整双节点关卡为：`sh scripts/check-multinode.sh --manifest .work/artifacts/manifest.json --nodes tests/fixtures/multinode/config.json --budget tests/fixtures/multinode/budget.json`。先执行 `sh scripts/build-system.sh` 取得五个固定预构建镜像及 manifest；关卡核对真实镜像 ID、二进制摘要、离线契约和不变资源预算，不用替换二进制绕过最终镜像。可用 `--suite runtime|control|upgrade|capacity` 单独运行；每个场景拥有独立外部测试 PG，使用统一数据库批次的300秒整包累计保护（命令315秒），由完整验收执行器运行时，10个场景仍共享600秒阶段保护；这些是 CI 总钟，明确的请求、故障、续期及查询功能期限和角色资源预算保留，缺场景不能以“无测试”通过。节点输入仅接受维护中的隔离双 Compose 模板，不接受生产主机。辅助 S3 使用固定 RustFS 测试镜像及一次性凭据，不代表已验收 Cloudflare IAM。
 
 容量关卡停止 B 的五个角色，由 A 承担新的业务 TLS 连接和真实 S3 归档/DuckDB 查询，记录每档并发、错误、延迟、吞吐、查询完成数及 Docker 资源。测量报告位于 `.work/system-acceptance/multinode/single-node-capacity.json`，明确为 `kind:fixture`，真实业务峰值未知；该报告不能用于生产资格。测试环境是同一个 Docker/Lima VM，包含本地 S3 和私网 HTTP 测试后端，其网络和硬件条件不同于 GCP/R2。报告的是这些条件下的实测值，不是生产容量承诺。节点级故障通过五个角色及网络的销毁/重建、保留卷和断开控制连接模拟；真实 GCP 内核重启、LB 数据路径、供应商权限及逐站 DNS 迁移仍须在后续明确授权的环境验收。
 
@@ -142,7 +140,7 @@ API 私网 mTLS 的信任链与撤销信息会自动重读；受控 `certificate
 
 capsule 的不可变 epoch 约束的是本角色解密身份与封装的 CA 签名密钥；证书、信任和管理摘流状态变化会产生同 epoch 的新密封快照，保留历史密钥快照。旧格式缺少密钥指纹时，只允许原样读取，发生变化需要受控的新备份 epoch。正常摘流、证书续期和角色重启不会把可变状态误当作密钥替换。
 
-本次增强要求 configuration format 2。早期 protocol 1 开发镜像缺少新的证书配置/安全契约，也不能作为本版本自动回退目标；上线前必须确认当前与候选镜像都符合完整离线契约。schema22 桥接仅用于启用前的受控迁移。配置与撤销下限不随程序回退而降低。
+本次增强要求 configuration format 2。早期 protocol 1 开发镜像缺少新的证书配置/安全契约，也不能作为本版本自动回退目标；上线前必须确认当前与候选镜像都符合完整离线契约。配置与撤销下限不随程序回退而降低。
 
 GCP 内网 DNS 可使用平台元数据 DNS 地址 `169.254.169.254:53` 或 `[fd20:ce::254]:53`；这里只为固定 DNS 目标开放 53，未开放元数据 HTTP 地址或任意 link-local 目标。[GCP 内网 DNS 官方说明](https://docs.cloud.google.com/compute/docs/internal-dns)。
 

@@ -126,7 +126,7 @@ func TestFullAcceptanceRequiresExplicitDualNodeGate(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	for _, required := range []string{"dual-node-runtime-control-upgrade-migration-capacity", "scripts/check-multinode.sh", ".work/artifacts/manifest.json", "tests/fixtures/multinode/config.json", "tests/fixtures/multinode/budget.json", "GATEBEAM_COMPOSE_EXACT_IMAGES"} {
+	for _, required := range []string{"dual-node-runtime-control-upgrade-capacity", "scripts/check-multinode.sh", ".work/artifacts/manifest.json", "tests/fixtures/multinode/config.json", "tests/fixtures/multinode/budget.json", "GATEBEAM_COMPOSE_EXACT_IMAGES"} {
 		if !strings.Contains(string(script), required) {
 			t.Fatalf("full acceptance missing %s", required)
 		}

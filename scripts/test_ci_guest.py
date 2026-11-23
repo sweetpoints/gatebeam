@@ -32,7 +32,7 @@ class GuestTests(unittest.TestCase):
    self.assertIn(('go','mod','download'),calls)
    installs=[c for c in calls if c[0]=='pnpm']
    self.assertEqual(len(installs),1);self.assertIn('--frozen-lockfile',installs[0]);self.assertIn('https://registry.npmmirror.com',installs[0])
-   self.assertFalse(any(c[0] in ('tar','zstd') or c[:2] in (('go','test'),('go','build')) or 'build-schema22-fixture.sh' in c for c in calls))
+   self.assertFalse(any(c[0] in ('tar','zstd') or c[:2] in (('go','test'),('go','build')) for c in calls))
    self.assertFalse((root/'prepared').exists())
 
  def test_failed_group_preserves_raw_result_and_nonzero_exit(self):

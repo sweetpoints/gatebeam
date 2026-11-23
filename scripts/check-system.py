@@ -33,7 +33,7 @@ stages = [
  ('archive-query', 420, ['scripts/check-logs.sh']),
  ('backup-recovery', 420, ['scripts/check-backup.sh']),
  ('compose-runtime', 450, ['scripts/check-compose.sh']),
- ('dual-node-runtime-control-upgrade-migration-capacity', 600, ['scripts/check-multinode.sh','--manifest','.work/artifacts/manifest.json','--nodes','tests/fixtures/multinode/config.json','--budget','tests/fixtures/multinode/budget.json']),
+ ('dual-node-runtime-control-upgrade-capacity', 600, ['scripts/check-multinode.sh','--manifest','.work/artifacts/manifest.json','--nodes','tests/fixtures/multinode/config.json','--budget','tests/fixtures/multinode/budget.json']),
  ('browser-auth', 450, ['scripts/check-web.sh', 'auth']),
  ('browser-ingress', 600, ['scripts/check-web.sh', 'ingress']),
  ('browser-pki', 600, ['scripts/check-web.sh', 'pki']),

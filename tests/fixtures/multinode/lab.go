@@ -18,7 +18,6 @@ import (
 	"gatebeam/internal/modules/deployment/application/nodes"
 	"gatebeam/internal/modules/deployment/domain"
 	"gatebeam/internal/modules/deployment/infrastructure/operations"
-	"gatebeam/internal/modules/identity"
 	pkiapp "gatebeam/internal/modules/pki/application"
 	pkidomain "gatebeam/internal/modules/pki/domain"
 	pkicrypto "gatebeam/internal/modules/pki/infrastructure/crypto"
@@ -316,11 +315,7 @@ func (l *Lab) Activate(t testing.TB) {
 		t.Fatal(e)
 	}
 }
-func Start(t testing.TB) *Lab { return startLab(t, nil, "") }
-func StartMigrated(t testing.TB, p *pgxpool.Pool, originalAPI string) *Lab {
-	return startLab(t, p, originalAPI)
-}
-func startLab(t testing.TB, supplied *pgxpool.Pool, originalAPI string) *Lab {
+func Start(t testing.TB) *Lab {
 	t.Helper()
 	validateInputs(t)
 	probe := os.Getenv("GATEBEAM_COMPOSE_PROBE_BINARY")
@@ -343,10 +338,7 @@ func startLab(t testing.TB, supplied *pgxpool.Pool, originalAPI string) *Lab {
 	})
 	prepareDocker(t, "network", "connect", "--alias", "database", network, dbContainer)
 	dbIP := prepareDocker(t, "inspect", "--format", "{{(index .NetworkSettings.Networks "+strconv.Quote(network)+").IPAddress}}", dbContainer)
-	pool := supplied
-	if pool == nil {
-		pool = testkit.Postgres(t)
-	}
+	pool := testkit.Postgres(t)
 	lab := &Lab{Pool: pool, Network: network, Run: run}
 	var consumers []*Node
 	var consumerLogins []string
@@ -419,15 +411,7 @@ func startLab(t testing.TB, supplied *pgxpool.Pool, originalAPI string) *Lab {
 	for i := 0; i < 2; i++ {
 		for _, role := range []string{"api", "provider", "notification", "ca", "leaf"} {
 			path := filepath.Join(root, fmt.Sprintf("%d-%s.agekey", i, role))
-			if i == 0 && role == "api" && originalAPI != "" {
-				raw, e := os.ReadFile(originalAPI)
-				if e != nil {
-					t.Fatal(e)
-				}
-				if e = os.WriteFile(path, raw, 0600); e != nil {
-					t.Fatal(e)
-				}
-			} else if i == 0 && role == "ca" {
+			if i == 0 && role == "ca" {
 				raw, _ := os.ReadFile(caConfig.IdentityFile)
 				if e = os.WriteFile(path, raw, 0600); e != nil {
 					t.Fatal(e)
@@ -446,14 +430,6 @@ func startLab(t testing.TB, supplied *pgxpool.Pool, originalAPI string) *Lab {
 	}
 	if e = pkicrypto.RewrapOnlineSigners(t.Context(), caConfig, filepath.Join(online, "root-ocsp.age"), policies["ca"]); e != nil {
 		t.Fatal(e)
-	}
-	if originalAPI != "" {
-		if _, e = identity.RewrapRoleSecrets(t.Context(), pool, originalAPI, policies["api"]); e != nil {
-			t.Fatal("controlled original-holder API rewrap", e)
-		}
-		if _, e = identity.VerifyRoleSecrets(t.Context(), pool, keys[1]["api"], policies["api"]); e != nil {
-			t.Fatal("B historical API verification", e)
-		}
 	}
 	images := map[string]string{}
 	for role, mode := range Modes {

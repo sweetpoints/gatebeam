@@ -8,11 +8,11 @@ from ci import ARCHES, STAGES, ROLES
 GROUPS={
  'core':('go-and-architecture','contracts','core-transactions'),
  'security':('public-client-process-faults','standard-ca-rotation-restart','owned-dns01','native-edge-supervisor','browser-pki'),
- 'runtime':('compose-runtime','dual-node-runtime-control-upgrade-migration-capacity'),
+ 'runtime':('compose-runtime','dual-node-runtime-control-upgrade-capacity'),
  'web':('browser-auth','browser-ingress','browser-operations'),
  'data':('archive-query','backup-recovery','capacity-100k','capacity-1m','capacity-4096','capacity-near2gib'),
 }
-DUAL_NODE_STAGE = 'dual-node-runtime-control-upgrade-migration-capacity'
+DUAL_NODE_STAGE = 'dual-node-runtime-control-upgrade-capacity'
 MULTINODE_SHARDS = {
  'runtime-control': 'bootstrap',
  'runtime-upgrade': 'maintenance',

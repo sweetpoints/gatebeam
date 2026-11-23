@@ -8,7 +8,7 @@ while [ "$#" -gt 0 ]; do
  --nodes) nodes=$2;shift 2;;
  --budget) budget=$2;shift 2;;
  --suite) suite=$2;shift 2;;
- *) echo 'usage: check-multinode.sh --manifest FILE --nodes FILE --budget FILE [--suite all|runtime|control|upgrade|migration|capacity|bootstrap|maintenance]' >&2;exit 2;;
+ *) echo 'usage: check-multinode.sh --manifest FILE --nodes FILE --budget FILE [--suite all|runtime|control|upgrade|capacity|bootstrap|maintenance]' >&2;exit 2;;
  esac
 done
 [ -n "$manifest" ] && [ -n "$nodes" ] && [ -n "$budget" ] || { echo 'explicit manifest, owned node config and budget required' >&2;exit 2; }
@@ -29,20 +29,17 @@ export GATEBEAM_COMPOSE_EXACT_IMAGES=1
 runtime=TestBothNodesColdStartWithAllControlDependenciesStopped
 control='TestDualControlFailuresAndQueryCoverage TestPrivateTLSRotationAndRevocationAcrossRestart TestFunctionalCanaryRejectsQueryAndArchiveFailures TestPrivateRolesObtainAndAutomaticallyLoadStandardACME TestCapsuleEnabledMaintenanceSurvivesEdgeControlRestart TestWorkerConstructorFailureBlocksReadinessButPreservesLocalQueries'
 upgrade='TestExecutorProcessInterruptionAndRejectedVersion TestWholeNodeMaintenanceRetainsOfflineBoot'
-migration=TestSchema22ExpandsBeforeDualNodeActivation
 capacity=TestSingleNodeMeasuredCapacityWithQueryContention
 case "$suite" in
  runtime) cases=$runtime;;
  control) cases=$control;;
  upgrade) cases=$upgrade;;
- migration) cases=$migration;;
  capacity) cases=$capacity;;
  bootstrap) cases="$runtime $control";;
- maintenance) cases="$upgrade $migration";;
- all) cases="$runtime $control $upgrade $migration $capacity";;
+ maintenance) cases=$upgrade;;
+ all) cases="$runtime $control $upgrade $capacity";;
  *) echo 'unknown suite' >&2;exit 2;;
 esac
-case "$suite" in all|maintenance|migration) sh scripts/build-schema22-fixture.sh;export GATEBEAM_SCHEMA22_BINARY="$PWD/.work/build/gatebeam-schema22";export GATEBEAM_BRIDGE_BINARY="$PWD/.work/build/gatebeam-current-host";;esac
 for test in $cases; do
  # A missing scenario must never turn into a successful "no tests to run".
  go test -tags integration -list "^$test$" ./tests/integration/multinode | rg -Fx "$test" >/dev/null

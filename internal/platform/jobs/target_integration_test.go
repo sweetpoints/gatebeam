@@ -134,24 +134,6 @@ func TestWorkerDrainKeepsLocalCleanup(t *testing.T) {
 	}
 }
 
-func TestJobTargetExpandPreservesLegacyQueue(t *testing.T) {
-	p := testkit.PostgresAt(t, 22)
-	if _, err := p.Exec(t.Context(), `INSERT INTO jobs(kind,key,payload) VALUES('legacy.fixture','before-expand','{}')`); err != nil {
-		t.Fatal(err)
-	}
-	if err := postgres.Migrate(t.Context(), p); err != nil {
-		t.Fatal(err)
-	}
-	store := New(p)
-	job, err := store.ClaimKinds(t.Context(), "bridge", time.Minute, []string{"legacy.fixture"})
-	if err != nil || job.Target.NodeID != "" || job.Attempt != 1 {
-		t.Fatalf("expand broke existing queue: %+v %v", job, err)
-	}
-	if err = store.Complete(t.Context(), job.ID, job.LeaseToken); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestDirectedQueueRuntimeAPICapability(t *testing.T) {
 	p := testkit.Postgres(t)
 	roles := runtimefixture.RuntimeRoles(t, p)

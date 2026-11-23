@@ -11,7 +11,7 @@ ROOT=Path(__file__).resolve().parent.parent
 OUT=ROOT/'ci-output'
 ROLES=('edge','api','worker','ca','query')
 ARCHES=('arm64','amd64')
-STAGES=('go-and-architecture','contracts','fixed-images','core-transactions','public-client-process-faults','standard-ca-rotation-restart','owned-dns01','native-edge-supervisor','archive-query','backup-recovery','compose-runtime','dual-node-runtime-control-upgrade-migration-capacity','browser-auth','browser-ingress','browser-pki','browser-operations','capacity-100k','capacity-1m','capacity-4096','capacity-near2gib')
+STAGES=('go-and-architecture','contracts','fixed-images','core-transactions','public-client-process-faults','standard-ca-rotation-restart','owned-dns01','native-edge-supervisor','archive-query','backup-recovery','compose-runtime','dual-node-runtime-control-upgrade-capacity','browser-auth','browser-ingress','browser-pki','browser-operations','capacity-100k','capacity-1m','capacity-4096','capacity-near2gib')
 DIGEST=re.compile(r'sha256:[a-f0-9]{64}\Z')
 
 def run(args,*,env=None,timeout=120,raw=False,input=None):
