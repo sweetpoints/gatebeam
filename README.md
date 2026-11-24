@@ -1,8 +1,6 @@
 # Gatebeam
 
-The default deployment runs on one machine, using one Compose project.
-
-Gatebeam is a single-host ingress gateway with an independent Nginx data plane,
+Gatebeam is an ingress gateway with an independent Nginx data plane,
 a Go modular control plane, PostgreSQL, and a Vue management UI. Business
 servers use standard TLS/mTLS, ACME v2/EAB, OCSP and CRLs; no business agent or
 custom client handshake is required. The offline root stays offline.
@@ -40,11 +38,13 @@ Deployment files have separate purposes:
 
 | File | Purpose |
 |---|---|
-| `compose.yaml` | Six default runtime services; prebuilt images only, no profiles |
-| `.env.example` → `.env` | Image references and host HTTP/HTTPS bindings |
+| `compose.yaml` | Five runtime services per gateway node, using prebuilt images |
+| `.env.example` | Example of the environment for one node, with image digests and node-specific settings |
 | `compose.dev.yaml` | Standalone disposable development database |
 
-Runtime service names describe duties on that one host:
+Production uses two gateway VMs, with one independently managed Compose project
+per VM and shared external PostgreSQL through Cloud SQL. The two management
+replicas serve one logical console. Each gateway runs these roles:
 
 | Service | Responsibility |
 |---|---|
@@ -53,12 +53,11 @@ Runtime service names describe duties on that one host:
 | `background-jobs` | Renewal, probes, archival, notifications and backups |
 | `internal-ca` | Standard internal ACME/OCSP/CRL authority |
 | `log-query` | Resource-limited local/R2 historical log queries |
-| `postgres` | The single local PostgreSQL database |
 
-For a new installation, follow the runbook's database/secret initialization;
-after initialization, use `docker compose up -d --no-build`. This is not an
-interruption-free upgrade command. Persistent-volume identities are preserved. Existing deployments need a
-controlled service-name transition; service renaming is not an online upgrade.
+For first installation, follow the [deployment runbook](docs/operations/deploy.md)
+to prepare the shared database, both nodes and their retained storage before
+starting Compose. For updates, use the [dual-node deployment and upgrade
+procedure](docs/operations/multi-instance.md).
 
 Run `scripts/check-system.sh` with `GATEBEAM_TEST_OPENSSL` pointing to OpenSSL 3
 for the complete owned local acceptance matrix. It requires Go 1.27, Python 3,
@@ -77,5 +76,5 @@ to record these separate gates outside the source repository.
 
 Compose only runs prebuilt images and contains no build declarations. Build in
 CI or with the separate build script, then load or pull the approved artifacts
-before deployment. Set the required image references in `.env`; the example's
-local tags are for development and production requires approved immutable artifacts.
+before deployment. The production environment for each node must reference
+approved images by digest.
