@@ -10,11 +10,34 @@ permissions:
   contents: read
 
 concurrency:
-  group: gatebeam-acceptance-${{ github.event.pull_request.number || github.ref }}
+  group: gatebeam-acceptance-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
+  release_plan:
+    name: Check the declared release version
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: version
+        env:
+          CI_COMMIT_SHA: ${{ github.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: python3 scripts/public_release.py plan
+
   full20:
+    needs: release_plan
+    if: >-
+      always() && !cancelled() &&
+      (github.event_name != 'push' ||
+      (needs.release_plan.result == 'success' && needs.release_plan.outputs.version == ''))
     name: Full acceptance / ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
@@ -45,71 +68,73 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
-        with:
-          go-version: '1.27.3'
-          cache: false
-
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
-        with:
-          node-version: '26.13.0'
-          package-manager-cache: false
-
-      - name: Prepare native acceptance dependencies
-        run: |
-          test "$(git rev-parse HEAD)" = "$CI_COMMIT_SHA"
-          python3 scripts/product_version.py
-          test "$(go env GOHOSTOS)" = linux
-          test "$(go env GOHOSTARCH)" = "$GATEBEAM_TARGET_ARCH"
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends python3-yaml ripgrep
-          sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/pnpm
-          node scripts/install-pnpm.mjs
-          echo /opt/pnpm >> "$GITHUB_PATH"
-          /opt/pnpm/pnpm --dir web install --frozen-lockfile
-          /opt/pnpm/pnpm --dir web exec playwright install --with-deps chromium
-          python3 scripts/ci-pull-images.py
-
-      - name: Check workflow and tooling contracts
-        run: |
-          python3 -m unittest discover -s scripts -p 'test_*.py'
-          node --test scripts/test_install_pnpm.mjs
-
-      - name: Run all twenty gates against local images
-        # Fixture containers use production UIDs on bind mounts. The host
-        # harness must read their private receipts and remove the test data.
-        run: |
-          sudo --non-interactive env \
-            PATH="$PATH" HOME="$HOME" CI="$CI" \
-            CI_COMMIT_SHA="$CI_COMMIT_SHA" GATEBEAM_TARGET_ARCH="$GATEBEAM_TARGET_ARCH" \
-            GATEBEAM_ACCEPTANCE_EXECUTION="$GATEBEAM_ACCEPTANCE_EXECUTION" \
-            GATEBEAM_ACCEPTANCE_KEEP_GOING="$GATEBEAM_ACCEPTANCE_KEEP_GOING" \
-            GATEBEAM_TEST_OPENSSL="$GATEBEAM_TEST_OPENSSL" GATEBEAM_BROWSER_CHANNEL="$GATEBEAM_BROWSER_CHANNEL" \
-            GOTOOLCHAIN="$GOTOOLCHAIN" PNPM_CONFIG_MANAGE_PACKAGE_MANAGER_VERSIONS="$PNPM_CONFIG_MANAGE_PACKAGE_MANAGER_VERSIONS" \
-            COMPOSE_ANSI="$COMPOSE_ANSI" COMPOSE_PROGRESS="$COMPOSE_PROGRESS" \
-            PYTHONDONTWRITEBYTECODE="$PYTHONDONTWRITEBYTECODE" \
-            GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$PWD" \
-            sh scripts/check-system.sh full
+      - uses: ./.github/actions/native-acceptance
 
       - name: Verify complete same-commit acceptance
-        run: |
-          PYTHONPATH=scripts python3 - <<'PY'
-          import os
-          from pathlib import Path
-          from acceptance_phases import snapshot_images
-          from ci import load, validate_receipt
-          from product_version import read_version
+        run: python3 scripts/public_release.py verify
 
-          result = load(Path('.work/system-acceptance/results.json'))
-          manifest = load(Path('.work/artifacts/manifest.json'))
-          if result.get('execution') != 'native':
-              raise SystemExit('expected native acceptance')
-          if manifest.get('product_version') != read_version():
-              raise SystemExit('build version differs from VERSION')
-          validate_receipt(result, manifest, os.environ['CI_COMMIT_SHA'], os.environ['GATEBEAM_TARGET_ARCH'])
-          for image in snapshot_images():
-              tag = f"gatebeam-{image['role']}:local"
-              built = next(row for row in manifest['artifacts'] if tag in row['RepoTags'])
-              if image['Id'] != built['Id']:
-                  raise SystemExit(f'acceptance image changed: {tag}')
-          PY
+  release_amd64:
+    name: Release amd64
+    needs: release_plan
+    if: needs.release_plan.outputs.version != ''
+    uses: ./.github/workflows/release-platform.yml
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    with:
+      architecture: amd64
+      runner: ubuntu-24.04
+      version: ${{ needs.release_plan.outputs.version }}
+      tag: ${{ needs.release_plan.outputs.tag }}
+
+  release_arm64:
+    name: Release arm64
+    needs: release_plan
+    if: needs.release_plan.outputs.version != ''
+    uses: ./.github/workflows/release-platform.yml
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    with:
+      architecture: arm64
+      runner: ubuntu-24.04-arm
+      version: ${{ needs.release_plan.outputs.version }}
+      tag: ${{ needs.release_plan.outputs.tag }}
+
+  publish:
+    name: Publish verified GHCR indexes
+    needs: [release_plan, release_amd64, release_arm64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: gatebeam-ghcr-${{ needs.release_plan.outputs.tag }}
+      cancel-in-progress: false
+    env:
+      CI_COMMIT_SHA: ${{ github.sha }}
+      RELEASE_VERSION: ${{ needs.release_plan.outputs.version }}
+      RELEASE_TAG: ${{ needs.release_plan.outputs.tag }}
+      DIGESTS_AMD64: ${{ needs.release_amd64.outputs.images }}
+      DIGESTS_ARM64: ${{ needs.release_arm64.outputs.images }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Prepare registry client
+        run: |
+          if ! command -v skopeo >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends skopeo
+          fi
+      - name: Publish only the verified version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          export DOCKER_CONFIG
+          DOCKER_CONFIG=$(mktemp -d)
+          trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+          printf '%s' "$GH_TOKEN" | skopeo login --authfile "$DOCKER_CONFIG/config.json" --username "$GITHUB_ACTOR" --password-stdin ghcr.io
+          python3 scripts/public_release.py publish

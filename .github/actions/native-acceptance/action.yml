@@ -1,0 +1,54 @@
+name: Native full acceptance
+description: Run the twenty gates on the current Linux architecture
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+      with:
+        go-version: '1.27.3'
+        cache: false
+
+    - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+      with:
+        node-version: '26.13.0'
+        package-manager-cache: false
+
+    - name: Prepare native acceptance dependencies
+      shell: bash
+      run: |
+        test "$(git rev-parse HEAD)" = "$CI_COMMIT_SHA"
+        python3 scripts/product_version.py
+        test "$(go env GOHOSTOS)" = linux
+        test "$(go env GOHOSTARCH)" = "$GATEBEAM_TARGET_ARCH"
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends python3-yaml ripgrep
+        sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/pnpm
+        node scripts/install-pnpm.mjs
+        echo /opt/pnpm >> "$GITHUB_PATH"
+        /opt/pnpm/pnpm --dir web install --frozen-lockfile
+        /opt/pnpm/pnpm --dir web exec playwright install --with-deps chromium
+        python3 scripts/ci-pull-images.py
+
+    - name: Check workflow and tooling contracts
+      shell: bash
+      run: |
+        python3 -m unittest discover -s scripts -p 'test_*.py'
+        node --test scripts/test_install_pnpm.mjs
+
+    - name: Run all twenty gates against local images
+      # Fixture containers use production UIDs on bind mounts. The host
+      # harness must read their private receipts and remove the test data.
+      shell: bash
+      run: |
+        sudo --non-interactive env \
+          PATH="$PATH" HOME="$HOME" CI="$CI" \
+          GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
+          CI_COMMIT_SHA="$CI_COMMIT_SHA" GATEBEAM_TARGET_ARCH="$GATEBEAM_TARGET_ARCH" \
+          GATEBEAM_ACCEPTANCE_EXECUTION="$GATEBEAM_ACCEPTANCE_EXECUTION" \
+          GATEBEAM_ACCEPTANCE_KEEP_GOING="$GATEBEAM_ACCEPTANCE_KEEP_GOING" \
+          GATEBEAM_TEST_OPENSSL="$GATEBEAM_TEST_OPENSSL" GATEBEAM_BROWSER_CHANNEL="$GATEBEAM_BROWSER_CHANNEL" \
+          GOTOOLCHAIN="$GOTOOLCHAIN" PNPM_CONFIG_MANAGE_PACKAGE_MANAGER_VERSIONS="$PNPM_CONFIG_MANAGE_PACKAGE_MANAGER_VERSIONS" \
+          COMPOSE_ANSI="$COMPOSE_ANSI" COMPOSE_PROGRESS="$COMPOSE_PROGRESS" \
+          PYTHONDONTWRITEBYTECODE="$PYTHONDONTWRITEBYTECODE" \
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$PWD" \
+          sh scripts/check-system.sh full

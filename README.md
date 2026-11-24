@@ -21,6 +21,21 @@ The root [VERSION](VERSION) file declares the Gatebeam product version using
 The declaration includes any pre-release and build metadata and is recorded
 verbatim in the image version label and build manifest.
 
+A push to `main` that advances `VERSION` triggers a release. Both native
+Linux jobs must pass all twenty gates before they push the exact tested
+images by digest to `ghcr.io/sweetpoints/gatebeam-{edge,api,worker,ca,query}`.
+The workflow then writes and verifies a two-platform index for each role.
+An existing version with different content fails the release. No image
+archives or test outputs are uploaded between jobs.
+
+GHCR tags use the declared version with `+` replaced by `_`. A tag that
+would exceed the registry's 128-character limit uses `version-sha256-`
+followed by the hash of the full version. The index and image metadata retain
+the original SemVer. For first publication only, set each of the five GHCR
+packages to Public in GitHub package settings. The workflow verifies anonymous
+pull access before reporting success. After setting visibility, rerun the
+failed publication job to verify the existing indexes without rewriting them.
+
 Deployment files have separate purposes:
 
 | File | Purpose |

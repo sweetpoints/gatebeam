@@ -2,11 +2,17 @@
 set -eu
 cd "$(dirname "$0")/.."
 version=$(python3 scripts/product_version.py)
+revision=$(git rev-parse HEAD)
+repository=${GITHUB_REPOSITORY:-sweetpoints/gatebeam}
 . ./scripts/target-arch.sh
 arch=$(gatebeam_target_arch)
 bounded(){ python3 scripts/bounded-command.py "$@"; }
 # Web compilation is CI preparation; ordinary execution retains90/120 seconds.
-set -- --label "org.opencontainers.image.version=$version" --build-arg "WEB_CHECK_TIMEOUT=$(python3 scripts/acceptance_budget.py 90)" --build-arg "WEB_INSTALL_TIMEOUT=$(python3 scripts/acceptance_budget.py 120)"
+set -- --label "org.opencontainers.image.version=$version" \
+ --label "org.opencontainers.image.revision=$revision" \
+ --label "org.opencontainers.image.source=https://github.com/$repository" \
+ --build-arg "WEB_CHECK_TIMEOUT=$(python3 scripts/acceptance_budget.py 90)" \
+ --build-arg "WEB_INSTALL_TIMEOUT=$(python3 scripts/acceptance_budget.py 120)"
 scripts/build-edge.sh
 mkdir -p .work/artifacts
 builder="gatebeam-build-$(date +%s)-$$"
