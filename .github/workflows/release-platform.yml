@@ -1,0 +1,63 @@
+name: Verify the native release platform
+
+on:
+  workflow_call:
+    inputs:
+      architecture:
+        required: true
+        type: string
+      runner:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+      tag:
+        required: true
+        type: string
+    outputs:
+      images:
+        value: ${{ jobs.stage.outputs.images }}
+
+jobs:
+  stage:
+    name: Verify and stage
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 180
+    outputs:
+      images: ${{ steps.stage.outputs.images }}
+    env:
+      CI_COMMIT_SHA: ${{ github.sha }}
+      GATEBEAM_TARGET_ARCH: ${{ inputs.architecture }}
+      GATEBEAM_ACCEPTANCE_EXECUTION: native
+      GATEBEAM_ACCEPTANCE_KEEP_GOING: '1'
+      GATEBEAM_BROWSER_CHANNEL: chromium
+      GATEBEAM_TEST_OPENSSL: /usr/bin/openssl
+      GOTOOLCHAIN: local
+      PNPM_CONFIG_MANAGE_PACKAGE_MANAGER_VERSIONS: 'false'
+      COMPOSE_ANSI: never
+      COMPOSE_PROGRESS: plain
+      PYTHONDONTWRITEBYTECODE: '1'
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/native-acceptance
+      - name: Verify complete same-commit acceptance
+        run: python3 scripts/public_release.py verify
+      - id: stage
+        name: Upload the tested platform images by digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! command -v skopeo >/dev/null; then
+            sudo apt-get install -y --no-install-recommends skopeo
+          fi
+          export DOCKER_CONFIG
+          DOCKER_CONFIG=$(mktemp -d)
+          trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+          printf '%s' "$GH_TOKEN" | skopeo login --authfile "$DOCKER_CONFIG/config.json" --username "$GITHUB_ACTOR" --password-stdin ghcr.io
+          python3 scripts/public_release.py stage

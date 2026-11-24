@@ -4,7 +4,7 @@ import json
 import re
 import tarfile
 
-def inspect_oci(path,arch):
+def inspect_oci(path,arch,*,expected_labels=None):
  # Never extract archive paths. Resolve only exact digest-addressed regular blobs.
  with tarfile.open(path,'r:*') as tf:
   members={}
@@ -32,6 +32,9 @@ def inspect_oci(path,arch):
    desc=manifest['manifests'][0];manifest=resolve(desc)
   config_desc=manifest['config'];config=resolve(config_desc)
   if config.get('os')!='linux' or config.get('architecture')!=arch:raise ValueError('OCI target platform mismatch')
+  if expected_labels is not None:
+   labels=config.get('config',{}).get('Labels') or {}
+   if any(labels.get(name)!=value for name,value in expected_labels.items()):raise ValueError('OCI image source or version label mismatch')
   # Verify every layer as a stream, without retaining image contents in memory.
   for layer in manifest.get('layers',[]):
    digest=layer.get('digest','')
