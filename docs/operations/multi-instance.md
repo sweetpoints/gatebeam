@@ -11,7 +11,7 @@
 | background-jobs | PG 租约协调的全局任务，以及按节点归属的采集、归档和本地查询 | 外部 PG、供应商、R2；仅通过同机 Unix socket 访问 query；健康端口默认 19093 |
 | log-query | 同机 worker 调用的受限 DuckDB，R2 只读和同机 spool 只读 | 查询仅 Unix socket，不提供查询网络 API、不含 DB 登录；私网只读健康端口默认 19095 |
 
-公网入口使用 regional external passthrough Network Load Balancer，TLS 在 Nginx 终止。私网 CA 使用独立稳定的内部 L4 入口，逻辑 ACME/状态域名保持稳定，TLS 在 CA 终止。节点 manifest 分别记录网关公网和私网入口的 backend service，以及本节点 instance group。滚动升级按节点摘除这两个网关入口的成员，独立 CA 的入口不参与变更。GCP LB、instance group、health check、DNS、TLS/防火墙和保留磁盘需单独准备，本地构建及测试不会修改它们。
+公网入口使用 regional external passthrough Network Load Balancer，TLS 在 Nginx 终止。私网 CA 使用独立稳定的内部 L4 入口，逻辑 ACME/状态域名保持稳定，TLS 在 CA 终止。在网关模板的 `protected_networks` 中填写独立 CA 及其内网入口的地址或网段，防止将这些地址设为业务上游。渲染节点配置时会保留这些网段，并补充两台网关的内网地址。节点 manifest 分别记录网关公网和私网入口的 backend service，以及本节点 instance group。滚动升级按节点摘除这两个网关入口的成员，独立 CA 的入口不参与变更。GCP LB、instance group、health check、DNS、TLS/防火墙和保留磁盘需单独准备，本地构建及测试不会修改它们。
 
 网关入口健康检查使用 `/readyz/data`。独立 CA 的验收使用 ACME 目录和签名 OCSP 响应。健康端口只绑定 VM 私网地址并由防火墙限定来源。健康监听只有 GET 探针；维护、排空、管理上游排除只能通过角色专属的 0600 Unix socket。控制 socket 不属于公开管理账号权限。
 
@@ -33,7 +33,7 @@
 `gatebeam-admin --operation provision-node --request <storage.json>` 的输入是 `{ "node": <完整节点清单>, "storage_root": "/mnt/gatebeam/a" }`。运维预先准备以下子目录，权限 0700、UID 101：
 
 ```
-edge-runtime  edge-logs  log-spool  query-socket  acme-challenges
+edge-runtime  edge-logs  log-spool  query-socket  acme-challenges  management-acme
 nginx-control  management-control  background-jobs-control   log-query-control
 api-capsules  edge-capsules  worker-capsules  backup-spool
 ```
@@ -51,15 +51,15 @@ raw logs 和 spool 必须位于与 runtime 不同的文件系统设备，可将�
 - 本地 operator 使用独立 node-admin DB 配置，执行 `gatebeam-admin --operation register-node --config <node-admin配置> --request <节点registration文件>`。没有登记/连接身份不符不能加载业务材料。
 - 在该节点执行 `docker compose --env-file <本机env> -f <compose文件> run --no-deps --rm nginx --config /run/gatebeam/edge.json --initialize-edge`。初始化在线重新检查授权，Nginx 实际校验、加载和探测后，保存完整本地材料/确认凭据及单调安全下限；同时建立本机标准 OCSP DER 缓存和新日志卷归属。已存在确认凭据时，初始化会拒绝，应走普通重启/升级流程。
 - `gatebeam-admin --operation inspect-boot --config <edge配置>` 输出确认的公开证据，不输出 PEM、私钥或业务材料。`docker compose ... up -d --no-build --no-deps nginx management background-jobs log-query` 启动四个角色。确认每个角色、mTLS、管理会话和日志查询链路。
-- 两节点准备完毕，使用 `{ "nodes": [<A完整清单>, <B完整清单>] }` 请求执行 `gatebeam-admin --operation activate-nodes --config <node-admin配置> --request <文件>`。命令检查全部十个私网角色探针及当前确认 artifact/镜像/代次；有缺口拒绝激活。它只修改受控节点成员状态，不创建 LB/DNS、不替代实际业务验收。
+- 两节点准备完毕，使用 `{ "nodes": [<A完整清单>, <B完整清单>] }` 请求执行 `gatebeam-admin --operation activate-nodes --config <node-admin配置> --request <文件>`。命令检查两台网关的八个私网角色探针及当前确认 artifact/镜像/代次；有缺口拒绝激活。它只修改受控节点成员状态，不创建 LB/DNS、不替代实际业务验收。
 
 普通 `gatebeam --config edge.json` 从本机已确认基线先启动 Nginx，之后才尝试数据库/control 连接。PG、API、jobs、R2、CA 不可用不阻止已有基线重启；新盘、身份不符、损坏/恢复的旧基线或不可信时间不能假装普通离线重启。未知、缺失、过期或不匹配的 OCSP 证明拒绝受影响连接，不进行离线签名。配置回退不回退安全时间、已知吊销及信任下限。WebSocket/SSE/长请求不承诺一直保持。
 
 ## 历史秘密迁移和备份
 
-对原始持有者的所属角色执行 `gatebeam-admin --operation rewrap-role --config <本角色maintenance配置>`，将历史密文重封装给授权的 A/B public recipients。API 处理 TOTP，worker 处理供应商及通知秘密，CA 处理 EAB 和两个在线 signer 文件。重封装使用单独授予的维护 DB 登录；普通 worker/CA 不获得此写能力。保留原始持有者直至每个 B 角色执行 `--operation verify-role` 成功；验证使用只读事务、不重封装、不改变业务版本、订单或账号权限。不能只改公共 recipient 列表就认定历史数据可读。
+对原始持有者的所属角色执行 `gatebeam-admin --operation rewrap-role --config <本角色maintenance配置>`，将历史密文重封装给授权的 A/B public recipients。API 处理 TOTP，worker 处理供应商及通知秘密。重封装使用单独授予的维护 DB 登录；普通 worker 不获得此写能力。CA 的 EAB 和签名密钥由独立 CA 部署管理。保留原始持有者直至每个 B 角色执行 `--operation verify-role` 成功；验证使用只读事务、不重封装、不改变业务版本、订单或账号权限。不能只改公共 recipient 列表就认定历史数据可读。
 
-每个角色只写自己的 sealed capsule 卷。snapshot exporter 作为独立、有界的一次性任务，挂载四个 capsule 子目录只读和本节点 backup-spool 可写，使用专属只读 snapshot DB 登录；不用运行角色拿到其他角色的明文私钥。上传由 worker 只读取密文 spool、使用限定 R2 backup 权限执行；query 使用另一个 R2 只读身份，日志归档 writer 也使用独立范围。`deploy/backup/` 提供 exporter/timer 模板，应绑定本节点命名卷与受控配置。备份 node/epoch 必须一致；混入另一节点 capsule 会被拒绝。离线恢复 private identity 不放在网关，recovery public recipient 也不能复用任何在线角色身份。
+每个角色只写自己的 sealed capsule 卷。snapshot exporter 作为独立、有界的一次性任务，挂载三个网关 capsule 子目录只读和本节点 backup-spool 可写，使用专属只读 snapshot DB 登录；不用运行角色拿到其他角色的明文私钥。上传由 worker 只读取密文 spool、使用限定 R2 backup 权限执行；query 使用另一个 R2 只读身份，日志归档 writer 也使用独立范围。`deploy/backup/` 提供 exporter/timer 模板，应绑定本节点命名卷与受控配置。备份 node/epoch 必须一致；混入另一节点 capsule 会被拒绝。离线恢复 private identity 不放在网关，recovery public recipient 也不能复用任何在线角色身份。
 
 备份按明确 schema 契约导出/恢复，未知版本拒绝；恢复到隔离的新数据库/目录，所有 owner 再次隔离旧账号、节点、查询/任务租约与不可信 CA 权威。恢复的密钥是历史材料，不授权新节点自动上线；必须重新登记、核对水位、轮换/验证需要的材料并重新初始化。普通镜像回退不运行 restore 或 goose down。
 
@@ -75,7 +75,7 @@ Cloudflare DNS 仍由管理员手工切换，可保留两条入口记录，让�
 
 控制面失联会暂停新升级，不阻止已有节点本地重启。命令超时记为结果未知，后续先观察其 operation/主机命令是否收敛。旧执行端未被确认失效、在途操作未完成时，不自动接管；数据库 TTL 也不能代替此证据。宿主维护需要恢复系统挂载/标准服务，再按相同角色就绪门槛重新加入。仅修改管理或 worker 不要求重启数据面。详细可执行计划及故障恢复命令随升级执行器交付；当前手册不代表已执行任何生产升级。
 
-备份宿主模板按 UID/GID 101 运行，仅把本节点受控 `storage_root` 下四个 sealed capsule 目录绑定为只读，backup-spool 绑定为可写。`deploy/backup/gatebeam-backup-export.service` 的 `/srv/gatebeam/storage` 必须与 provision-node 的实际根目录一致；启用 timer 前核对只读 snapshot DB 文件、恢复公共 recipient/epoch、主机上的固定版本二进制与输出目录权限。模板不会读取四个在线秘密目录。
+备份宿主模板按 UID/GID 101 运行，仅把本节点受控 `storage_root` 下三个 sealed capsule 目录绑定为只读，backup-spool 绑定为可写。`deploy/backup/gatebeam-backup-export.service` 的 `/srv/gatebeam/storage` 必须与 provision-node 的实际根目录一致；启用 timer 前核对只读 snapshot DB 文件、恢复公共 recipient/epoch、主机上的固定版本二进制与输出目录权限。模板不会读取四个在线秘密目录。
 
 启用业务 mTLS 之前，需在 edge、管理和 worker 的受控配置中提供 `certificate_status_profiles_file`。该文件绑定实际 CA 的标准 OCSP/CRL 地址和可信发行者；不能把示例域名直接当成已配置的证书状态服务。首次空配置仅提供管理入口，不代表业务 mTLS 或 Cloudflare 凭据已完成接入。
 
@@ -118,26 +118,27 @@ Cloudflare DNS 仍由管理员手工切换，可保留两条入口记录，让�
 
 ## 私网角色证书的标准自动续期
 
-API、CA 和网关至 API 的客户端证书使用原有角色进程内的标准 ACME v2/EAB 客户端；不增加业务端组件或自创证书协议。首次由管理员按确切内网 DNS 名称及 serverAuth/clientAuth 用途授权并创建标准 EAB，向该角色交付自己的有效初始证书、私钥、EAB 文件和内部 CA 根。每个角色在 bootstrap 配置中可启用：
+管理 API 的服务端证书和网关连接 API 的客户端证书分别由所属进程使用标准 ACME v2/EAB 客户端续期；不增加业务端组件或自创证书协议。首次由管理员按确切内网 DNS 名称及 serverAuth/clientAuth 用途授权并创建标准 EAB，向该角色交付自己的有效初始证书、私钥、EAB 文件和内部 CA 根。管理 API 在 bootstrap 配置中启用续期时使用本机挑战卷。
 
 ```json
 "private_tls_renewal": {
   "origin": "https://ca.internal.example:8444",
   "email": "REPLACE_WITH_OPERATOR_EMAIL",
   "eab_file": "/run/gatebeam/acme-eab.json",
-  "trust_file": "/run/gatebeam/ca-root.pem"
+  "trust_file": "/run/gatebeam/ca-root.pem",
+  "http01_webroot": "/var/lib/gatebeam/management-acme"
 }
 ```
 
-`origin` 为现有内部 CA 根地址，客户端按用途选择标准目录。默认每 60 秒检查，在证书剩余有效期进入原有效期三分之一时续期；测试中的短周期不是生产承诺。初次启用后自动取得正式证书，后续使用原 ACME 账号和本角色既有私钥续期，EAB 无须每次人工重建。公有证书输出原子写入本角色保留 capsule 目录的 `renewed-tls.pem`，API/CA 在 TLS 握手时自动加载，网关自动触发本节点派生配置加载，无须手工发布业务配置。失败时保留仍有效的已加载证书，过期则不再就绪。
+`origin` 为现有内部 CA 根地址，客户端按用途选择标准目录。默认每 60 秒检查，在证书剩余有效期进入原有效期三分之一时续期；测试中的短周期不是生产承诺。初次启用后自动取得正式证书，后续使用原 ACME 账号和本角色既有私钥续期，EAB 无须每次人工重建。续期后的证书原子写入本角色保留 capsule 目录的 `renewed-tls.pem`，API 在 TLS 握手时自动加载，网关自动触发本节点派生配置加载，无须手工发布业务配置。失败时保留仍有效的已加载证书，过期则不再就绪。
 
-网关节点的私网 mTLS 客户端使用节点专属 DNS 名称，CA 经 TCP 80 验证其 HTTP-01 响应。管理 API 使用本地挑战目录时，证书中的每个 DNS 名称都必须能把该客户端的 HTTP-01 请求路由到正确节点。专用管理目录只在相应的 HTTP 虚拟主机暴露挑战路径。CA 的 ACME 与状态端口由独立 CA 主机提供，CA 的数据库和签名材料由 CA 运维单独备份。
+网关节点的私网 mTLS 客户端使用节点专属 DNS 名称，CA 经 TCP 80 验证其 HTTP-01 响应。管理 API 使用本地挑战目录时，证书中的每个 DNS 名称都必须能把该客户端的 HTTP-01 请求路由到正确节点。专用管理目录只在相应的 HTTP 虚拟主机暴露挑战路径。CA 的 ACME 与状态端口由独立 CA 主机提供。按 [CA 部署说明](../../gatebeam-ca/README.md) 续期和更新 CA 服务本身的 HTTPS 证书，CA 在握手时重新读取 PEM 文件。CA 的数据库和签名材料由 CA 运维单独备份。
 
-API 私网 mTLS 的信任链与撤销信息会自动重读；受控 `certificate_status_profiles_file` 中指定可信发行者及固定 CRL 地址，程序定期获取原始签名 CRL，禁止使用客户端自带 AIA 指挥出站。完整链逐级检查签名、用途、时效和撤销；只把自签名根作为锚点。`api_tls_crl_file` 提供初始 CRL，`api_tls_state_file` 必须位于本 API 的独立保留私有卷，保存与节点/epoch 绑定的撤销和时间下限。缺失、过期、篡改或回退的状态拒绝新连接；会话票据关闭，避免恢复会话绕过检查。管理员可按已有连接管理操作主动断开旧连接，不承诺一分钟内全部吊销生效。
+API 私网 mTLS 的信任链与撤销信息会自动重读；受控 `certificate_status_profiles_file` 中指定可信发行者及固定 CRL 地址，程序定期获取原始签名 CRL，禁止使用客户端自带 AIA 指挥出站。完整链逐级检查签名、用途、时效和撤销；只把自签名根作为锚点。`api_tls_crl_file` 提供初始 CRL，`api_tls_state_file` 必须位于本 API 的独立保留私有卷，保存与节点/epoch 绑定的撤销和时间下限。缺失、过期、篡改或回退的状态拒绝新连接；会话票据关闭，避免恢复会话绕过检查。已建立的连接按原连接生命周期结束。
 
 本地生效配置同样在切换指针前持久化安全下限。当前配置损坏时，其他逻辑发布版本不能被自动认定安全而回退；同一发布中不再符合安全绑定的证书/信任/撤销材料仅关闭受影响站点。这个选择可能让该节点等待修复，但不能恢复已撤销的访问。另一节点继续服务。
 
-capsule 的不可变 epoch 约束的是本角色解密身份与封装的 CA 签名密钥；证书、信任和管理摘流状态变化会产生同 epoch 的新密封快照，保留历史密钥快照。旧格式缺少密钥指纹时，只允许原样读取，发生变化需要受控的新备份 epoch。正常摘流、证书续期和角色重启不会把可变状态误当作密钥替换。
+capsule 的不可变 epoch 约束的是网关角色的解密身份；证书、信任和管理摘流状态变化会产生同 epoch 的新密封快照，保留历史密钥快照。旧格式缺少密钥指纹时，只允许原样读取，发生变化需要受控的新备份 epoch。正常摘流、证书续期和角色重启不会把可变状态误当作密钥替换。
 
 本次增强要求 configuration format 2。早期 protocol 1 开发镜像缺少新的证书配置/安全契约，也不能作为本版本自动回退目标；上线前必须确认当前与候选镜像都符合完整离线契约。配置与撤销下限不随程序回退而降低。
 
