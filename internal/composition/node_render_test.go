@@ -8,6 +8,7 @@ import (
 	"gatebeam/internal/platform/secrets"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -20,6 +21,17 @@ func TestNodeRenderUsesPeerVPCAndIndependentRecipients(t *testing.T) {
 		data, err := os.ReadFile(filepath.Join("..", "..", "deploy", name))
 		if err != nil {
 			t.Fatal(err)
+		}
+		if name == "edge/edge.example.json" {
+			var template map[string]any
+			if err := json.Unmarshal(data, &template); err != nil {
+				t.Fatal(err)
+			}
+			template["protected_networks"] = []string{"10.42.0.30/32", "10.43.0.10/32"}
+			data, err = json.Marshal(template)
+			if err != nil {
+				t.Fatal(err)
+			}
 		}
 		target := filepath.Join(templates, name)
 		if err = os.MkdirAll(filepath.Dir(target), 0700); err != nil {
@@ -91,6 +103,16 @@ func TestNodeRenderUsesPeerVPCAndIndependentRecipients(t *testing.T) {
 	}
 	if edge["node_id"] != node.Node.ID || edge["management_api_address"] != "10.42.0.31:9443" || edge["management_api_peer_address"] != "10.42.0.30:9443" || edge["certificate_recipient"] != own["leaf"] {
 		t.Fatal("B reused A endpoints or identity", edge["node_id"])
+	}
+	var edgeNetworks struct {
+		Protected []string `json:"protected_networks"`
+	}
+	if err := json.Unmarshal(data, &edgeNetworks); err != nil {
+		t.Fatal(err)
+	}
+	wantProtected := []string{"10.42.0.30/32", "10.43.0.10/32", "10.42.0.31/32"}
+	if !slices.Equal(edgeNetworks.Protected, wantProtected) {
+		t.Fatalf("protected networks = %v, want %v", edgeNetworks.Protected, wantProtected)
 	}
 	var api struct {
 		HealthEndpoints map[string]map[string]string `json:"health_endpoints"`

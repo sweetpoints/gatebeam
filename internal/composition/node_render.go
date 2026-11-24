@@ -104,7 +104,12 @@ func RenderNodeConfigs(ctx context.Context, r NodeRenderRequest) error {
 			c.CARecipient = ""
 		}
 		if name != "log-query" {
-			c.ProtectedNetworks = []string{hostPrefix(r.Node.PrivateAddress), hostPrefix(r.Node.PeerAddress)}
+			for _, address := range []string{r.Node.PrivateAddress, r.Node.PeerAddress} {
+				prefix := hostPrefix(address)
+				if !slices.Contains(c.ProtectedNetworks, prefix) {
+					c.ProtectedNetworks = append(c.ProtectedNetworks, prefix)
+				}
+			}
 			c.BackupRecipient = r.BackupRecipient
 			c.BackupEpoch = r.BackupEpoch
 			if r.BackupRecipient != "" {
