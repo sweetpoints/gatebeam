@@ -14,20 +14,24 @@ import (
 	"time"
 )
 
+func fixtureTLSClient(pool *x509.CertPool, host, address string, pair *tls.Certificate) *http.Client {
+	config := &tls.Config{RootCAs: pool, ServerName: host, MinVersion: tls.VersionTLS12}
+	if pair != nil {
+		config.Certificates = []tls.Certificate{*pair}
+	}
+	return &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{
+		Proxy: nil, DisableKeepAlives: true, TLSClientConfig: config,
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{Timeout: time.Second}).DialContext(ctx, network, address)
+		},
+	}}
+}
+
 func (n *Node) RefreshClients(t testing.TB, trust []byte) {
 	t.Helper()
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(trust) {
 		t.Fatal("fixture trust")
-	}
-	client := func(host, address string, pair *tls.Certificate) *http.Client {
-		config := &tls.Config{RootCAs: pool, ServerName: host, MinVersion: tls.VersionTLS12}
-		if pair != nil {
-			config.Certificates = []tls.Certificate{*pair}
-		}
-		return &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true, TLSClientConfig: config, DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			return (&net.Dialer{Timeout: time.Second}).DialContext(ctx, network, address)
-		}}}
 	}
 	cert, e := os.ReadFile(filepath.Join(n.Secrets["nginx"], "api-client.pem"))
 	if e != nil {
@@ -42,9 +46,9 @@ func (n *Node) RefreshClients(t testing.TB, trust []byte) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	n.PublicClient = client("management.dual.test", n.Port(t, 443), nil)
-	n.APIClient = client("management-api.dual.test", n.Port(t, 9443), &pair)
-	n.CAClient = client("ca.dual.test", n.CAAddress, nil)
+	n.PublicClient = fixtureTLSClient(pool, "management.dual.test", n.Port(t, 443), nil)
+	n.APIClient = fixtureTLSClient(pool, "management-api.dual.test", n.Port(t, 9443), &pair)
+	n.CAClient = fixtureTLSClient(pool, "ca.dual.test", n.CAAddress, nil)
 }
 func (b *Business) RefreshClient(t testing.TB, n *Node) {
 	t.Helper()

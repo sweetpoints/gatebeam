@@ -85,18 +85,32 @@ func (l *Lab) startCA(t testing.TB, root string, cert, key []byte) {
 func (l *Lab) RestartCA(t testing.TB) {
 	t.Helper()
 	Docker(t, "start", l.CAContainer)
+	// Docker allocates another loopback port when a container starts again.
+	l.CAAddress = Docker(t, "port", l.CAContainer, "8444/tcp")
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(l.Trust) {
+		t.Fatal("fixture CA trust")
+	}
+	client := fixtureTLSClient(pool, "ca.dual.test", l.CAAddress, nil)
+	for _, node := range l.Nodes {
+		node.CAAddress = l.CAAddress
+		node.CAClient = client
+	}
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	ticker := time.NewTicker(40 * time.Millisecond)
 	defer ticker.Stop()
-	client := l.Nodes[0].CAClient
+	var lastError error
+	var lastStatus int
 	for ctx.Err() == nil {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, caOrigin+"/acme/server/directory", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		resp, err := client.Do(req)
+		lastError = err
 		if err == nil {
+			lastStatus = resp.StatusCode
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				return
@@ -107,7 +121,8 @@ func (l *Lab) RestartCA(t testing.TB) {
 		case <-ticker.C:
 		}
 	}
-	t.Fatal("independent CA did not resume serving ACME after restart", Docker(t, "logs", "--tail", "8", l.CAContainer))
+	t.Fatal("independent CA did not resume serving ACME after restart", "address", l.CAAddress,
+		"last_status", lastStatus, "last_error", lastError, "logs", Docker(t, "logs", "--tail", "8", l.CAContainer))
 }
 
 func (l *Lab) caFile(t testing.TB, name string, raw []byte) {

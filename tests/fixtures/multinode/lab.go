@@ -33,7 +33,6 @@ import (
 	"go.yaml.in/yaml/v3"
 	"io"
 	"math/big"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -736,23 +735,14 @@ func Start(t testing.TB) *Lab {
 		node.prepareCompose(t, "start", "nginx", "management", "background-jobs", "log-query")
 		rootPool := x509.NewCertPool()
 		rootPool.AppendCertsFromPEM(trust)
-		tlsClient := func(host, address string, certificate *tls.Certificate) *http.Client {
-			cfg := &tls.Config{RootCAs: rootPool, ServerName: host, MinVersion: tls.VersionTLS12}
-			if certificate != nil {
-				cfg.Certificates = []tls.Certificate{*certificate}
-			}
-			return &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true, TLSClientConfig: cfg, DialContext: func(ctx context.Context, network, ignored string) (net.Conn, error) {
-				return (&net.Dialer{Timeout: time.Second}).DialContext(ctx, network, address)
-			}}}
-		}
-		node.PublicClient = tlsClient("management.dual.test", node.Port(t, 443), nil)
+		node.PublicClient = fixtureTLSClient(rootPool, "management.dual.test", node.Port(t, 443), nil)
 		pair, e := tls.X509KeyPair(clientCert, clientKey)
 		if e != nil {
 			t.Fatal(e)
 		}
-		node.APIClient = tlsClient("management-api.dual.test", node.Port(t, 9443), &pair)
+		node.APIClient = fixtureTLSClient(rootPool, "management-api.dual.test", node.Port(t, 9443), &pair)
 		node.CAAddress = lab.CAAddress
-		node.CAClient = tlsClient("ca.dual.test", lab.CAAddress, nil)
+		node.CAClient = fixtureTLSClient(rootPool, "ca.dual.test", lab.CAAddress, nil)
 	}
 	lab.Activate(t)
 	verifyRoleBudgets(t, lab)
