@@ -142,7 +142,7 @@ return safe metadata under current credential checks. A resource requires View o
 **every** affected draft and published site, including indirect account, credential
 and trust dependencies across all immutable spec revisions. Unreferenced resources
 require an interactive global administrator; a site-limited admin-owned API token
-cannot read global/unreferenced resources or `/pki/management`. Writes retain the
+cannot read global or unreferenced resources. Writes retain the
 existing current interactive administrator + fresh single-use TOTP boundary, scope
 and expected-revision checks, with audit in the owner transaction. GET never consumes
 TOTP. Lists are bounded to 1000 current resources; version metadata is bounded to the

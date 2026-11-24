@@ -95,6 +95,19 @@ func TestRolesMigrateFreshAndExisting(t *testing.T) {
 			if err := p.QueryRow(t.Context(), "SELECT has_column_privilege('gatebeam_runtime_api','pki_certificates','der','SELECT'),has_schema_privilege('gatebeam_runtime_api',$1,'CREATE')", schema).Scan(&issuerDER, &dbCreate); err != nil || issuerDER || dbCreate {
 				t.Fatalf("API gained forbidden capability: %v", err)
 			}
+			for _, check := range []string{
+				"has_table_privilege('gatebeam_runtime_api','pki_grants','INSERT')",
+				"has_column_privilege('gatebeam_runtime_api','pki_principals','disabled','UPDATE')",
+				"has_table_privilege('gatebeam_runtime_api','pki_eab','INSERT')",
+				"has_table_privilege('gatebeam_runtime_api','pki_revocations','INSERT')",
+				"has_any_column_privilege('gatebeam_runtime_api','pki_orders','SELECT')",
+				"has_any_column_privilege('gatebeam_runtime_api','pki_certificates','SELECT')",
+			} {
+				var capable bool
+				if err := p.QueryRow(t.Context(), "SELECT "+check).Scan(&capable); err != nil || capable {
+					t.Fatalf("API retained CA authority %s: %v", check, err)
+				}
+			}
 			var allowed bool
 			if err := p.QueryRow(t.Context(), "SELECT has_table_privilege('gatebeam_runtime_api','identity_sessions','SELECT,INSERT,UPDATE,DELETE')").Scan(&allowed); err != nil || !allowed {
 				t.Fatalf("API cannot manage sessions: %v", err)
@@ -136,7 +149,7 @@ func TestConcurrentMigratorsSerialize(t *testing.T) {
 		other   func(context.Context, *pgxpool.Pool) error
 		table   string
 		version int
-	}{{schemaLock, postgres.Migrate, postgres.MigrateRoles, "goose_db_version", 27}, {rolesLock, postgres.MigrateRoles, postgres.Migrate, "gatebeam_role_version", 6}} {
+	}{{schemaLock, postgres.Migrate, postgres.MigrateRoles, "goose_db_version", 27}, {rolesLock, postgres.MigrateRoles, postgres.Migrate, "gatebeam_role_version", 7}} {
 		// Up intentionally bypasses the session lock when there is no pending
 		// migration. Make an owned fixture version pending without changing its
 		// schema, then verify it cannot execute while another session holds the lock.
@@ -166,7 +179,7 @@ func TestConcurrentMigratorsSerialize(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := p.Exec(t.Context(), "DELETE FROM gatebeam_role_version WHERE version_id=6"); err != nil {
+	if _, err := p.Exec(t.Context(), "DELETE FROM gatebeam_role_version WHERE version_id=7"); err != nil {
 		t.Fatal(err)
 	}
 	var wg sync.WaitGroup
@@ -182,7 +195,7 @@ func TestConcurrentMigratorsSerialize(t *testing.T) {
 		}
 	}
 	var n int
-	if err := p.QueryRow(t.Context(), "SELECT count(*) FROM gatebeam_role_version WHERE version_id=6 AND is_applied").Scan(&n); err != nil || n != 1 {
+	if err := p.QueryRow(t.Context(), "SELECT count(*) FROM gatebeam_role_version WHERE version_id=7 AND is_applied").Scan(&n); err != nil || n != 1 {
 		t.Fatalf("concurrent migration history count=%d err=%v", n, err)
 	}
 }

@@ -328,7 +328,7 @@ func (l *Lab) RenewRoleTLS(t testing.TB, n *Node, role string) string {
 	t.Helper()
 	name := "management-api.dual.test"
 	certFile, keyFile := "api.pem", "api.key"
-	if role == "internal-ca" {
+	if role == "external-ca" {
 		name = "ca.dual.test"
 		certFile, keyFile = "tls.pem", "tls.key"
 	}
@@ -355,42 +355,41 @@ func (l *Lab) RenewRoleTLS(t testing.TB, n *Node, role string) string {
 	}
 	defer clear(private)
 	chain := append(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: l.TestIssuer.Certificate.Raw})...)
-	n.WriteRoleFiles(t, role, map[string][]byte{certFile: chain, keyFile: pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: private})})
+	files := map[string][]byte{certFile: chain, keyFile: pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: private})}
+	if role == "external-ca" {
+		// Replace via the shared fixture directory; the independent process
+		// revalidates its TLS pair on the next handshake.
+		for name, data := range files {
+			l.caFile(t, name, data)
+		}
+	} else {
+		n.WriteRoleFiles(t, role, files)
+	}
+
 	return serial.String()
 }
 
 func (l *Lab) EnableRoleRenewal(t testing.TB, n *Node, role string) {
 	t.Helper()
-	b := l.Business(t)
-	name, directory, purpose := "management-api.dual.test", "server", "serverAuth"
-	if role == "internal-ca" {
-		name = "ca.dual.test"
-	}
+	name, purpose := "management-api.dual.test", pkidomain.ServerAuth
 	if role == "nginx" {
-		name = "gateway-a.dual.test"
+		name, purpose = "gateway-a.dual.test", pkidomain.ClientAuth
 		if n == l.Nodes[1] {
 			name = "gateway-b.dual.test"
 		}
-		directory = "client"
-		purpose = "clientAuth"
 	}
-	raw := b.Session.Call(t, "POST", "/pki/grants", map[string]any{"names": []string{name}, "purpose": purpose, "directory": directory, "expires": time.Now().Add(time.Hour), "totp_code": b.Session.MFA(t)}, 201)
-	var grant struct{ ID string }
-	if json.Unmarshal(raw, &grant) != nil || grant.ID == "" {
-		t.Fatal("manual grant missing")
-	}
-	credentials := b.Session.Call(t, "POST", "/pki/grants/"+grant.ID+"/eab", map[string]any{"totp_code": b.Session.MFA(t)}, 201)
+	credentials := l.caEAB(t, name, purpose)
 	c := n.Configs[role]
-	trust := "/run/gatebeam/roots.pem"
-	if role == "internal-ca" {
-		trust = "/run/gatebeam/root.pem"
+	c.PrivateTLSRenewal = &bootstrap.PrivateTLSRenewal{Origin: caOrigin, Email: "owned@dual.test", EABFile: "/run/gatebeam/acme-eab.json", TrustFile: "/run/gatebeam/roots.pem", CheckSeconds: 1, RenewBeforeSeconds: 7200}
+	if role == "management" {
+		c.PrivateTLSRenewal.HTTP01WebRoot = "/var/lib/gatebeam/management-acme"
 	}
-	c.PrivateTLSRenewal = &bootstrap.PrivateTLSRenewal{Origin: "https://ca.dual.test:8444", Email: "owned@dual.test", EABFile: "/run/gatebeam/acme-eab.json", TrustFile: trust, CheckSeconds: 1, RenewBeforeSeconds: 7200}
+
 	n.Configs[role] = c
 	config, _ := json.Marshal(c)
 	n.WriteRoleFiles(t, role, map[string][]byte{"acme-eab.json": credentials, c.Mode + ".json": config})
 	n.Compose(t, "up", "-d", "--no-build", "--no-deps", "--force-recreate", role)
-	n.Wait(t, role, map[string]string{"nginx": "data", "management": "management", "internal-ca": "acme"}[role])
+	n.Wait(t, role, map[string]string{"nginx": "data", "management": "management"}[role])
 }
 
 // This controlled fixture shortens only the retained public leaf to make the
@@ -399,9 +398,6 @@ func (n *Node) MakeRoleRenewalDue(t testing.TB, role string) {
 	t.Helper()
 	mode := n.Configs[role].Mode
 	cert := "api.pem"
-	if role == "internal-ca" {
-		cert = "tls.pem"
-	}
 	if role == "nginx" {
 		cert = "api-client.pem"
 	}

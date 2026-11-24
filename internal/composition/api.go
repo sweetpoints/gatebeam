@@ -11,7 +11,6 @@ import (
 	"gatebeam/internal/integration/migration"
 	"gatebeam/internal/integration/notificationaccess"
 	"gatebeam/internal/integration/operationsaccess"
-	"gatebeam/internal/integration/pkiaccess"
 	"gatebeam/internal/integration/publication"
 	backupapp "gatebeam/internal/modules/backup/application"
 	backuppg "gatebeam/internal/modules/backup/infrastructure/postgres"
@@ -38,9 +37,6 @@ import (
 	obsquery "gatebeam/internal/modules/observability/application/query"
 	obsHTTP "gatebeam/internal/modules/observability/transport/http"
 	"gatebeam/internal/modules/pki"
-	pkiapp "gatebeam/internal/modules/pki/application"
-	pkistatus "gatebeam/internal/modules/pki/application/status"
-	pkiHTTP "gatebeam/internal/modules/pki/transport/http"
 	"gatebeam/internal/platform/audit"
 	"gatebeam/internal/platform/bootstrap"
 	"gatebeam/internal/platform/jobs"
@@ -213,7 +209,11 @@ func newAPIHandlerWithPKI(p *pgxpool.Pool, se *secrets.Store, protected []netip.
 	sites := ingress.New(p, ingressaccess.Authorizer{Identity: access})
 	catalog.Ingress = sites
 	materials := certificates.NewReader(p)
-	materials.SetLeafStatus(certificatematerials.LeafStatus{Owner: pki.NewMaterialStatus()})
+	if pkiCfg.CertificateStatusTrustFile == "" {
+		materials.SetLeafStatus(certificatematerials.LeafStatus{Owner: pki.NewMaterialStatus()})
+	} else if e := certificates.ConfigureStandardLeafStatus(materials, pkiCfg.CertificateStatusProfilesFile, pkiCfg.CertificateStatusTrustFile); e != nil {
+		return nil, e
+	}
 	if e := certificates.ConfigureStatus(materials, pkiCfg.CertificateStatusProfilesFile); e != nil {
 		return nil, e
 	}
@@ -268,28 +268,6 @@ func newAPIHandlerWithPKI(p *pgxpool.Pool, se *secrets.Store, protected []netip.
 				s.SetEvents(deployment.NewEvents(p))
 			}
 			return m, s, certapp.ActorRef{UserID: a.UserID, AuthVersion: a.AuthVersion, CredentialKind: string(a.CredentialKind), CredentialID: a.CredentialID}, err
-		})
-		pkiHTTP.RegisterQueries(e, func(c *echo.Context) (*pkiapp.Queries, pkiapp.ActorRef, error) {
-			a, err := authHTTP.AuthenticateRequest(c, auth, cookie, false)
-			if err != nil {
-				return nil, pkiapp.ActorRef{}, err
-			}
-			return pki.NewQueries(p, pkiaccess.Queries{Access: access, Actor: a, Transactions: postgres.NewRunner(p)}, pkiCfg.CAOrigin), pkiapp.ActorRef{UserID: a.UserID, AuthVersion: a.AuthVersion, CredentialKind: string(a.CredentialKind), CredentialID: a.CredentialID}, nil
-		})
-		pkiHTTP.RegisterRevocations(e, func(c *echo.Context, code string) (*pkistatus.Management, pkiapp.ActorRef, error) {
-			a, err := authHTTP.AuthenticateRequest(c, auth, cookie, true)
-			if err != nil {
-				return nil, pkiapp.ActorRef{}, pkiapp.ErrGrantDenied
-			}
-			return pki.NewRevocations(p, pkiaccess.New(auth, a, code)), pkiapp.ActorRef{UserID: a.UserID, AuthVersion: a.AuthVersion, CredentialKind: string(a.CredentialKind), CredentialID: a.CredentialID}, nil
-		})
-		pkiHTTP.RegisterGrants(e, func(c *echo.Context, code string) (*pkiapp.GrantService, pkiapp.ActorRef, error) {
-			a, err := authHTTP.AuthenticateRequest(c, auth, cookie, true)
-			if err != nil {
-				return nil, pkiapp.ActorRef{}, pkiapp.ErrGrantDenied
-			}
-			service, err := pki.NewGrants(p, pkiaccess.New(auth, a, code), pkiCfg.CARecipient, pki.GrantConfig{Recipients: pkiCfg.EncryptionRecipients.Role("ca"), ServerNames: pkiCfg.CAServerNames, ClientNames: pkiCfg.CAClientNames})
-			return service, pkiapp.ActorRef{UserID: a.UserID, AuthVersion: a.AuthVersion, CredentialKind: string(a.CredentialKind), CredentialID: a.CredentialID}, err
 		})
 		releaseHTTP.RegisterPreflight(e, migration.New(access, preflight.New(deploymentpg.NewRuntime(p, jobs.New(p), protected), probe.HTTP{}, protected)), func(c *echo.Context, write bool) (publication.ActorRef, error) {
 			a, err := authHTTP.AuthenticateRequest(c, auth, cookie, write)

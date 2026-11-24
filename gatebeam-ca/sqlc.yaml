@@ -1,0 +1,10 @@
+version: "2"
+sql:
+  - engine: postgresql
+    schema: [db/migrations/00008_pki.sql, db/migrations/00009_pki_accounts.sql, db/migrations/00010_pki_orders.sql, db/migrations/00011_pki_status.sql]
+    queries: internal/modules/pki/infrastructure/postgres/queries
+    gen:
+      go:
+        package: dbgen
+        out: internal/modules/pki/infrastructure/postgres/dbgen
+        sql_package: pgx/v5

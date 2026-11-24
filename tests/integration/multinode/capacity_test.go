@@ -32,7 +32,7 @@ func TestSingleNodeMeasuredCapacityWithQueryContention(t *testing.T) {
 	a, b := l.Nodes[0], l.Nodes[1]
 	archive := l.EnableArchive(t)
 	archive.WaitBoth(t)
-	b.Compose(t, "stop", "--timeout", "2", "nginx", "management", "background-jobs", "internal-ca", "log-query")
+	b.Compose(t, "stop", "--timeout", "2", "nginx", "management", "background-jobs", "log-query")
 	for j := 0; j < 20; j++ {
 		if business.Get(t, a, "/") != 200 {
 			t.Fatal("warmup failed")

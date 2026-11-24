@@ -51,8 +51,9 @@ replicas serve one logical console. Each gateway runs these roles:
 | `nginx` | Public HTTP/HTTPS entry and local configuration supervisor |
 | `management` | Management web console and API |
 | `background-jobs` | Renewal, probes, archival, notifications and backups |
-| `internal-ca` | Standard internal ACME/OCSP/CRL authority |
 | `log-query` | Resource-limited local/R2 historical log queries |
+
+Deploy [Gatebeam CA](gatebeam-ca/README.md) separately with its own PostgreSQL database. Gateway nodes use the CA’s private ACME and status endpoints.
 
 For first installation, follow the [deployment runbook](docs/operations/deploy.md)
 to prepare the shared database, both nodes and their retained storage before

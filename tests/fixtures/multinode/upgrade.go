@@ -59,6 +59,7 @@ func (o *UpgradeOperations) node(id string) *Node {
 	}
 	return nil
 }
+
 var errFixtureSnapshot = errors.New("bad fixture status")
 
 func observationFailureClass(err error) string {
@@ -131,7 +132,7 @@ func fixtureReady(role string, s lifecycle.Snapshot) bool {
 	if !s.Live || s.Mode != "serving" {
 		return false
 	}
-	caps := map[string][]string{"nginx": {"data"}, "management": {"management"}, "background-jobs": {"global-jobs", "local-cleanup"}, "internal-ca": {"acme", "status"}, "log-query": {"query"}}
+	caps := map[string][]string{"nginx": {"data"}, "management": {"management"}, "background-jobs": {"global-jobs", "local-cleanup"}, "log-query": {"query"}}
 	for _, cap := range caps[role] {
 		if !s.Ready[cap] {
 			return false
@@ -153,6 +154,7 @@ func (o *UpgradeOperations) snapshot(ctx context.Context, n *Node, role string) 
 	}
 	return s, nil
 }
+
 // A control acknowledgement records desired state; only the actual role's
 // loaded target digest completes the operation. Parent cancellation still wins.
 func (o *UpgradeOperations) waitManagementDigest(ctx context.Context, n *Node, digest string) (lifecycle.Snapshot, int, error) {
@@ -319,9 +321,9 @@ func (o *UpgradeOperations) Apply(ctx context.Context, s upgrade.Step) (upgrade.
 		case <-time.After(time.Duration(s.Seconds) * time.Second):
 		}
 	case "host-stop":
-		n.Compose(o.T, "stop", "--timeout", "2", "nginx", "management", "background-jobs", "internal-ca", "log-query")
+		n.Compose(o.T, "stop", "--timeout", "2", "nginx", "management", "background-jobs", "log-query")
 	case "host-start":
-		n.Compose(o.T, "start", "nginx", "management", "background-jobs", "internal-ca", "log-query")
+		n.Compose(o.T, "start", "nginx", "management", "background-jobs", "log-query")
 	default:
 		return op, errors.New("unknown fixture step")
 	}

@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"io"
 	"os"
+	"path/filepath"
 )
 
 type PrivateTLSRenewal struct {
@@ -16,6 +17,7 @@ type PrivateTLSRenewal struct {
 	Email              string `json:"email"`
 	EABFile            string `json:"eab_file"`
 	TrustFile          string `json:"trust_file"`
+	HTTP01WebRoot      string `json:"http01_webroot,omitempty"`
 	CheckSeconds       int    `json:"check_seconds,omitempty"`
 	RenewBeforeSeconds int    `json:"renew_before_seconds,omitempty"`
 }
@@ -51,6 +53,7 @@ type Config struct {
 	RecoveryReportDirectory            string                       `json:"recovery_report_directory"`
 	BackupRecipient                    string                       `json:"backup_recipient"`
 	BackupEpoch                        string                       `json:"backup_epoch"`
+	BackupExternalCA                   bool                         `json:"backup_external_ca,omitempty"`
 	BackupCapsuleDirectory             string                       `json:"backup_capsule_directory"`
 	BackupSpoolDirectory               string                       `json:"backup_spool_directory"`
 	BackupCredentialsFile              string                       `json:"backup_credentials_file"`
@@ -74,6 +77,8 @@ type Config struct {
 	CertificateIdentityFile           string   `json:"certificate_identity_file"`
 	CertificateRecipient              string   `json:"certificate_recipient"`
 	CertificateStatusProfilesFile     string   `json:"certificate_status_profiles_file"`
+	CertificateStatusTrustFile        string   `json:"certificate_status_trust_file"`
+	ManagementACMEWebRoot             string   `json:"management_acme_webroot,omitempty"`
 	ACMEWebRoot                       string   `json:"acme_webroot"`
 	CARootOCSPCertificateFile         string   `json:"ca_root_ocsp_certificate_file"`
 	CARootOCSPSignerFile              string   `json:"ca_root_ocsp_signer_file"`
@@ -189,6 +194,9 @@ func ValidateCapabilities(mode string, cfg Config) error {
 		if (mode != "api" && mode != "ca" && mode != "edge") || v.Origin == "" || v.Email == "" || v.EABFile == "" || v.TrustFile == "" || v.CheckSeconds < 0 || v.CheckSeconds > 3600 || v.RenewBeforeSeconds < 0 || v.RenewBeforeSeconds > 31*86400 {
 			return errors.New("invalid private role renewal policy")
 		}
+		if root := v.HTTP01WebRoot; root != "" && (mode != "api" || !filepath.IsAbs(root) || filepath.Clean(root) != root || root == "/" || root == filepath.Clean(cfg.ACMEWebRoot)) {
+			return errors.New("management HTTP-01 requires a dedicated absolute webroot")
+		}
 	}
 
 	if (cfg.APITLSCRLFile != "" || cfg.APITLSStateFile != "" || cfg.APITLSCertificateFile != "" || cfg.APITLSKeyFile != "" || cfg.APITLSTrustFile != "" || len(cfg.APITLSClientNames) > 0) && mode != "api" {
@@ -219,6 +227,13 @@ func ValidateCapabilities(mode string, cfg Config) error {
 	if mode == "ca-import" && (cfg.DatabaseFile != "" || cfg.OfflineRootDirectory != "" || cfg.IdentityFile != "" || cfg.CertificateIdentityFile != "" || cfg.CertificateProviderIdentityFile != "") {
 		return errors.New("CA import must be offline with no runtime credentials")
 	}
+	if cfg.ManagementACMEWebRoot != "" && (mode != "edge" || cfg.ManagementAPIName == "" || cfg.ManagementACMEWebRoot == cfg.ACMEWebRoot) {
+		return errors.New("dedicated management HTTP-01 route requires an edge and an API hostname")
+	}
+	if cfg.CertificateStatusTrustFile != "" && (cfg.CertificateStatusProfilesFile == "" || (mode != "api" && mode != "edge")) {
+		return errors.New("certificate status trust requires profiles and a material-consuming role")
+	}
+
 	if cfg.QueryLocalDirectory != "" && mode != "query" {
 		return errors.New("query local capability forbidden")
 	}
@@ -227,6 +242,9 @@ func ValidateCapabilities(mode string, cfg Config) error {
 	}
 	if cfg.RecoveryIdentityFile != "" && mode != "backup-restore" {
 		return errors.New("offline recovery identity forbidden online")
+	}
+	if cfg.BackupExternalCA && mode != "backup-export" {
+		return errors.New("external CA backup scope applies to snapshot export")
 	}
 	if cfg.BackupCredentialsFile != "" && mode != "worker" {
 		return errors.New("backup upload credentials forbidden")

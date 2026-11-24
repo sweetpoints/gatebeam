@@ -36,6 +36,7 @@ fi
 port=$(python3 scripts/aggregate-command.py 5 docker port "$name" 5432/tcp | sed 's/127.0.0.1://')
 export GATEBEAM_TEST_DB_CONTAINER="$name"
 export GATEBEAM_TEST_DATABASE_URL="postgres://postgres:test-only@127.0.0.1:$port/gatebeam?sslmode=disable"
+export GATEBEAM_CA_TEST_DATABASE_URL="$GATEBEAM_TEST_DATABASE_URL"
 python3 scripts/aggregate-command.py 5 docker exec "$name" psql -U postgres -d gatebeam -Atc 'show server_version'
 if [ "$#" = 0 ]; then set -- ./internal/platform/jobs/... ./internal/platform/audit/...; fi
 # Every call is a real database integration batch. Whole-package time includes

@@ -1,0 +1,9 @@
+/bin/
+/gatebeam-ca
+*.dsn
+*.age
+*.agekey
+*.pem
+*.der
+/eab.json
+/config.json

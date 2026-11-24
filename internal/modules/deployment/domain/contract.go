@@ -13,5 +13,9 @@ type RuntimeContract struct {
 }
 
 func CurrentRuntimeContract() RuntimeContract {
-	return RuntimeContract{ConfigurationFormat: 2, RuntimeProtocol: 1, BootFormat: BootFormat, SchemaMin: 27, SchemaMax: 27, RoleMin: 6, RoleMax: 6}
+	return RuntimeContract{ConfigurationFormat: 2, RuntimeProtocol: 1, BootFormat: BootFormat, SchemaMin: 27, SchemaMax: 27, RoleMin: 6, RoleMax: 7}
+}
+
+func (c RuntimeContract) SupportsVersions(schema, roles int64) bool {
+	return schema >= c.SchemaMin && schema <= c.SchemaMax && roles >= c.RoleMin && roles <= c.RoleMax
 }

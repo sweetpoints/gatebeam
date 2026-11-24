@@ -12,8 +12,8 @@ RequiresMountsFor=/mnt/gatebeam/a/edge-runtime /mnt/gatebeam/a/edge-logs /mnt/ga
 Type=oneshot
 RemainAfterExit=yes
 ExecStartPre=/usr/local/bin/gatebeam-admin --operation verify-storage --request /etc/gatebeam/a.storage.json
-ExecStart=/usr/bin/docker compose --env-file /etc/gatebeam/a.env -f /opt/gatebeam/compose.yaml up -d --no-build --no-deps nginx management background-jobs internal-ca log-query
-ExecStop=/usr/bin/docker compose --env-file /etc/gatebeam/a.env -f /opt/gatebeam/compose.yaml stop --timeout 65 nginx management background-jobs internal-ca log-query
+ExecStart=/usr/bin/docker compose --env-file /etc/gatebeam/a.env -f /opt/gatebeam/compose.yaml up -d --no-build --no-deps nginx management background-jobs log-query
+ExecStop=/usr/bin/docker compose --env-file /etc/gatebeam/a.env -f /opt/gatebeam/compose.yaml stop --timeout 65 nginx management background-jobs log-query
 TimeoutStartSec=90
 TimeoutStopSec=90
 

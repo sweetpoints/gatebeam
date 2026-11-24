@@ -10,6 +10,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/pem"
+	"fmt"
 	app "gatebeam/internal/modules/certificates/application"
 	"gatebeam/internal/modules/certificates/infrastructure/status"
 	"github.com/miekg/dns"
@@ -26,11 +27,13 @@ import (
 )
 
 type standardFixture struct {
-	client                        *status.Client
-	trust                         app.TrustBundle
-	bundle                        []byte
-	now                           time.Time
-	rootUnknown, wrongID, expired *atomic.Bool
+	client                                *status.Client
+	trust                                 app.TrustBundle
+	bundle                                []byte
+	now                                   time.Time
+	rootUnknown, wrongID, expired         *atomic.Bool
+	leafExpired, leafRevoked, leafUnknown *atomic.Bool
+	leaf                                  app.StoredVersion
 }
 
 func newStandardFixture(t *testing.T) standardFixture {
@@ -46,6 +49,7 @@ func newStandardFixture(t *testing.T) standardFixture {
 	var rootUnknown atomic.Bool
 	var wrongID atomic.Bool
 	var expired atomic.Bool
+	var leafExpired, leafRevoked, leafUnknown atomic.Bool
 	var intermediate *x509.Certificate
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		issuer, key := root, rootKey
@@ -54,10 +58,14 @@ func newStandardFixture(t *testing.T) standardFixture {
 		}
 		if strings.HasPrefix(r.URL.Path, "/crl/") {
 			next := now.Add(10 * time.Minute)
-			if expired.Load() {
+			if expired.Load() || (issuer == intermediate && leafExpired.Load()) {
 				next = now.Add(-time.Minute)
 			}
-			raw, e := x509.CreateRevocationList(rand.Reader, &x509.RevocationList{Number: big.NewInt(1), ThisUpdate: now.Add(-2 * time.Minute), NextUpdate: next}, issuer, key)
+			list := &x509.RevocationList{Number: big.NewInt(1), ThisUpdate: now.Add(-2 * time.Minute), NextUpdate: next}
+			if issuer == intermediate && leafRevoked.Load() {
+				list.RevokedCertificateEntries = []x509.RevocationListEntry{{SerialNumber: big.NewInt(3), RevocationTime: now.Add(-time.Minute)}}
+			}
+			raw, e := x509.CreateRevocationList(rand.Reader, list, issuer, key)
 			if e != nil {
 				t.Error(e)
 				http.Error(w, "fixture", 500)
@@ -77,12 +85,19 @@ func newStandardFixture(t *testing.T) standardFixture {
 		if request.SerialNumber.Cmp(intermediate.SerialNumber) == 0 && issuer == root && !rootUnknown.Load() {
 			verdict = ocsp.Good
 		}
+		if request.SerialNumber.Int64() == 3 && issuer == intermediate && !leafUnknown.Load() {
+			verdict = ocsp.Good
+		}
 		if wrongID.Load() {
 			copyIssuer := *issuer
 			copyIssuer.RawSubject = []byte("wrong signed issuer identity")
 			issuer = &copyIssuer
 		}
-		raw, e := ocsp.CreateResponse(issuer, issuer, ocsp.Response{Status: verdict, SerialNumber: request.SerialNumber, ThisUpdate: now.Add(-time.Minute), NextUpdate: now.Add(4 * time.Minute), IssuerHash: request.HashAlgorithm}, key)
+		updated := now.Add(-time.Minute)
+		if issuer == intermediate && request.SerialNumber.Int64() == 3 {
+			updated = now.Truncate(time.Minute).Add(time.Second)
+		}
+		raw, e := ocsp.CreateResponse(issuer, issuer, ocsp.Response{Status: verdict, SerialNumber: request.SerialNumber, ThisUpdate: updated, NextUpdate: now.Add(4 * time.Minute), IssuerHash: request.HashAlgorithm}, key)
 		if e != nil {
 			t.Error(e)
 			return
@@ -93,7 +108,7 @@ func newStandardFixture(t *testing.T) standardFixture {
 	t.Cleanup(server.Close)
 	_, port, _ := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
 	origin := "http://status.test:" + port
-	template := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "status intermediate"}, IsCA: true, BasicConstraintsValid: true, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, OCSPServer: []string{origin + "/ocsp/root"}}
+	template := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "status intermediate"}, IsCA: true, BasicConstraintsValid: true, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, OCSPServer: []string{origin + "/ocsp/root"}, CRLDistributionPoints: []string{origin + "/crl/root"}}
 	intermediateDER, e := x509.CreateCertificate(rand.Reader, template, root, &intermediateKey.PublicKey, rootKey)
 	if e != nil {
 		t.Fatal(e)
@@ -124,7 +139,32 @@ func newStandardFixture(t *testing.T) standardFixture {
 	}
 	trust := app.TrustBundle{Purpose: "clientAuth", StatusProfile: "owned", Fingerprints: []string{rf, cf}}
 	bundle := append(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: rootDER}), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: intermediateDER})...)
-	return standardFixture{client, trust, bundle, now, &rootUnknown, &wrongID, &expired}
+	leafKey, e := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if e != nil {
+		t.Fatal(e)
+	}
+	leafTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(3), DNSNames: []string{"leaf.test"},
+		NotBefore: now.Add(-time.Minute), NotAfter: now.Add(time.Hour),
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		OCSPServer:  []string{origin + "/ocsp/intermediate"}, CRLDistributionPoints: []string{origin + "/crl/intermediate"},
+	}
+	leafDER, e := x509.CreateCertificate(rand.Reader, leafTemplate, intermediate, &leafKey.PublicKey, intermediateKey)
+	if e != nil {
+		t.Fatal(e)
+	}
+	leaf := app.StoredVersion{
+		Version: app.Version{
+			Serial: fmt.Sprintf("%040x", leafTemplate.SerialNumber), Purpose: "clientAuth", LeafFingerprint: fingerprint(leafDER),
+			Issuer: cf, IssuerKeyFingerprint: fingerprint(intermediate.RawSubjectPublicKeyInfo),
+		},
+		CertificatePEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER}),
+	}
+	return standardFixture{
+		client: client, trust: trust, bundle: bundle, now: now,
+		rootUnknown: &rootUnknown, wrongID: &wrongID, expired: &expired,
+		leafExpired: &leafExpired, leafRevoked: &leafRevoked, leafUnknown: &leafUnknown, leaf: leaf,
+	}
 }
 func TestStandardUnknownReadinessAndKnownIntermediateStatus(t *testing.T) {
 	f := newStandardFixture(t)
@@ -150,5 +190,41 @@ func TestStandardUnknownReadinessAndKnownIntermediateStatus(t *testing.T) {
 	expired.Store(true)
 	if _, e = client.Attest(context.Background(), trust, bundle, now); e == nil {
 		t.Fatal("expired CRL accepted")
+	}
+}
+
+func TestPinnedLeafStatusFailsClosed(t *testing.T) {
+	f := newStandardFixture(t)
+	verifier, err := status.NewLeafVerifier(f.client, f.bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, managed := range []bool{true, false} {
+		if err := verifier.Verify(t.Context(), f.leaf, managed, f.now.Add(time.Second)); err != nil {
+			t.Fatalf("valid leaf rejected (managed=%t): %v", managed, err)
+		}
+	}
+	for _, scenario := range []struct {
+		name  string
+		fault *atomic.Bool
+	}{
+		{"expired issuer CRL", f.leafExpired},
+		{"revoked leaf with good OCSP", f.leafRevoked},
+		{"unknown leaf", f.leafUnknown},
+		{"unknown intermediate", f.rootUnknown},
+		{"wrong OCSP issuer", f.wrongID},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			scenario.fault.Store(true)
+			defer scenario.fault.Store(false)
+			if err := verifier.Verify(t.Context(), f.leaf, false, f.now.Add(time.Second)); err == nil {
+				t.Fatal("unsafe imported leaf accepted")
+			}
+		})
+	}
+	tampered := f.leaf
+	tampered.LeafFingerprint = strings.Repeat("0", 64)
+	if err := verifier.Verify(t.Context(), tampered, true, f.now.Add(time.Second)); err == nil {
+		t.Fatal("leaf different from the stored fingerprint was accepted")
 	}
 }

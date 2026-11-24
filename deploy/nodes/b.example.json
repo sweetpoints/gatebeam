@@ -34,13 +34,6 @@
       "health_port": 19093,
       "control_volume": "gatebeam-b-background-jobs-control"
     },
-    "internal-ca": {
-      "image": "registry.example/gatebeam/ca@sha256:REPLACE_64_HEX",
-      "protocol": 1,
-      "config_file": "/etc/gatebeam/b/ca/ca.json",
-      "health_port": 19094,
-      "control_volume": "gatebeam-b-internal-ca-control"
-    },
     "log-query": {
       "image": "registry.example/gatebeam/query@sha256:REPLACE_64_HEX",
       "protocol": 1,

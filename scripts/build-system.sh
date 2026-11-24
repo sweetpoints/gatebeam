@@ -14,6 +14,7 @@ set -- --label "org.opencontainers.image.version=$version" \
  --build-arg "WEB_CHECK_TIMEOUT=$(python3 scripts/acceptance_budget.py 90)" \
  --build-arg "WEB_INSTALL_TIMEOUT=$(python3 scripts/acceptance_budget.py 120)"
 scripts/build-edge.sh
+python3 scripts/aggregate-command.py 90 env GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -p 2 -trimpath -o .work/build/gatebeam-ca ./gatebeam-ca/cmd/gatebeam-ca
 mkdir -p .work/artifacts
 builder="gatebeam-build-$(date +%s)-$$"
 cleanup(){ bounded 20 docker buildx rm -f "$builder" >/dev/null 2>&1 || :; }

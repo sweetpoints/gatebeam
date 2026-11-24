@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-func TestProductionComposeHasFiveRolesAndNoDatabase(t *testing.T) {
+func TestProductionComposeHasFourGatewayRolesAndNoCAOrDatabase(t *testing.T) {
 	_, source, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(source), "../../..")
 	raw, e := os.ReadFile(filepath.Join(root, "compose.yaml"))
@@ -23,10 +23,10 @@ func TestProductionComposeHasFiveRolesAndNoDatabase(t *testing.T) {
 		t.Fatal(e)
 	}
 	services := cfg["services"].(map[string]any)
-	if len(services) != 5 || services["postgres"] != nil {
-		t.Fatal("production must have exactly five roles and an external database")
+	if len(services) != 4 || services["postgres"] != nil || services["internal-ca"] != nil {
+		t.Fatal("production must have four gateway roles, an external CA and an external database")
 	}
-	for _, name := range []string{"nginx", "management", "background-jobs", "internal-ca", "log-query"} {
+	for _, name := range []string{"nginx", "management", "background-jobs", "log-query"} {
 		role, ok := services[name].(map[string]any)
 		if !ok {
 			t.Fatal("missing role", name)

@@ -23,11 +23,10 @@ ProtectControlGroups=yes
 RestrictSUIDSGID=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ReadOnlyPaths=/etc/gatebeam/backup-export.json /run/gatebeam/backup-database
-# Same controlled storage_root as provision-node; four sealed volumes only.
+# Same controlled storage_root as provision-node; three sealed gateway volumes only.
 BindReadOnlyPaths=/srv/gatebeam/storage/api-capsules:/var/lib/gatebeam/backup-capsules/api
 BindReadOnlyPaths=/srv/gatebeam/storage/edge-capsules:/var/lib/gatebeam/backup-capsules/edge
 BindReadOnlyPaths=/srv/gatebeam/storage/worker-capsules:/var/lib/gatebeam/backup-capsules/worker
-BindReadOnlyPaths=/srv/gatebeam/storage/ca-capsules:/var/lib/gatebeam/backup-capsules/ca
 BindPaths=/srv/gatebeam/storage/backup-spool:/var/lib/gatebeam/backup-spool
 ReadWritePaths=/var/lib/gatebeam/backup-spool
 InaccessiblePaths=-/run/gatebeam/api-secrets -/run/gatebeam/ca-secrets -/run/gatebeam/edge-secrets -/run/gatebeam/worker-secrets

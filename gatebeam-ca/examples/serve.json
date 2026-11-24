@@ -1,0 +1,21 @@
+{
+  "database_file": "/etc/gatebeam-ca/runtime.dsn",
+  "listen": "10.20.0.2:8444",
+  "origin": "https://ca.internal.example:8444",
+  "status_listen": "10.20.0.2:8081",
+  "status_origin": "http://ca.internal.example:8081",
+  "tls_certificate_file": "/etc/gatebeam-ca/transport/tls.pem",
+  "tls_key_file": "/etc/gatebeam-ca/transport/tls-key.pem",
+  "tls_trust_file": "/etc/gatebeam-ca/transport/trust.pem",
+  "issuer_file": "/etc/gatebeam-ca/online/issuer.pem",
+  "root_file": "/etc/gatebeam-ca/online/root.pem",
+  "signer_file": "/etc/gatebeam-ca/online/issuer.age",
+  "identity_file": "/etc/gatebeam-ca/online/identity.agekey",
+  "root_crl_file": "/etc/gatebeam-ca/online/root.crl.der",
+  "root_ocsp_certificate_file": "/etc/gatebeam-ca/online/root-ocsp.pem",
+  "root_ocsp_signer_file": "/etc/gatebeam-ca/online/root-ocsp.age",
+  "server_names": ["backend.internal.example"],
+  "client_names": ["gateway.internal.example"],
+  "validation_networks": ["10.40.2.0/24"],
+  "validation_deny_networks": ["10.40.2.1/32"]
+}

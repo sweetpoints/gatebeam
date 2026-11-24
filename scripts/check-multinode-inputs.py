@@ -28,9 +28,14 @@ for role in roles:
         raise SystemExit('missing fixed role artifact')
     actual=subprocess.check_output(['docker','image','inspect',tag,'--format','{{.Id}}'],text=True).strip()
     if actual!=found[0]['Id']:raise SystemExit('local image differs from explicit manifest')
+    if role == 'ca':
+        help_text=subprocess.check_output(['docker','run','--rm','--network','none','--read-only','--user','101:101','--cap-drop','ALL',tag,'--help'],timeout=15,text=True)
+        if 'gatebeam-ca <serve|' not in help_text:
+            raise SystemExit('CA image must run the independent service')
+        continue
     result=subprocess.check_output(['docker','run','--rm','--network','none','--read-only','--user','101:101','--cap-drop','ALL','--security-opt','no-new-privileges:true','--memory','64m','--pids-limit','32','--entrypoint','/usr/local/bin/gatebeam',tag,'--runtime-contract'],timeout=15,text=True)
     contract=json.loads(result)
-    if contract.get('configuration_format')!=2 or contract.get('runtime_protocol')!=1 or contract.get('boot_format')!=1 or not (0<contract.get('schema_min',0)<=27<=contract.get('schema_max',0)) or not (0<contract.get('role_min',0)<=6<=contract.get('role_max',0)):
+    if contract.get('configuration_format')!=2 or contract.get('runtime_protocol')!=1 or contract.get('boot_format')!=1 or not (0<contract.get('schema_min',0)<=27<=contract.get('schema_max',0)) or not (0<contract.get('role_min',0)<=7<=contract.get('role_max',0)):
         raise SystemExit('prebuilt role contract does not support this fixture')
 binary=root/'.work/build/gatebeam'
 if not binary.is_file() or hashlib.sha256(binary.read_bytes()).hexdigest()!=manifest.get('binary_sha256'):

@@ -34,7 +34,7 @@ func activationProbes(ctx context.Context, pair []domain.NodeDeployment, client 
 		}
 		client = &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true}, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("health redirect denied") }}
 	}
-	required := map[string][]string{"nginx": {lifecycle.Data}, "management": {lifecycle.Management}, "background-jobs": {lifecycle.GlobalJobs, lifecycle.LocalCleanup}, "internal-ca": {lifecycle.ACME, lifecycle.Status}, "log-query": {lifecycle.Query}}
+	required := map[string][]string{"nginx": {lifecycle.Data}, "management": {lifecycle.Management}, "background-jobs": {lifecycle.GlobalJobs, lifecycle.LocalCleanup}, "log-query": {lifecycle.Query}}
 	out := []nodes.ActivationProbe{}
 	for _, n := range pair {
 		proof := nodes.ActivationProbe{Node: n.Node, Images: map[string]string{}}

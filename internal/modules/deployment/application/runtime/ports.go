@@ -46,6 +46,7 @@ type CloudflareSet struct {
 }
 type RuntimeState struct {
 	OCSPResponder                                                                string // fixed loopback standard HTTP responder owned by this supervisor
+	ManagementACMEWebRoot, ManagementACMEHost                                    string
 	ACMEWebRoot                                                                  string // process-owned shared HTTP-01 challenge directory
 	LogDirectory                                                                 string // fixed process-owned durable directory, never supplied by API
 	Management                                                                   *ManagementTLS

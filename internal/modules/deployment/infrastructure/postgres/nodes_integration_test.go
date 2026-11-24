@@ -30,7 +30,7 @@ func TestReleaseWaitsForBothNodes(t *testing.T) {
 	image := "sha256:" + strings.Repeat("a", 64)
 	images := map[string]string{}
 	protocols := map[string]uint32{}
-	for _, role := range []string{"nginx", "management", "background-jobs", "internal-ca", "log-query"} {
+	for _, role := range []string{"nginx", "management", "background-jobs", "log-query"} {
 		images[role] = image
 		protocols[role] = 1
 	}
@@ -213,7 +213,7 @@ func TestNodeIdentityLegacyOriginCannotBeCopiedToSecondNode(t *testing.T) {
 		ref := domain.NodeRef{ID: nodeID, Epoch: 1}
 		images := map[string]string{}
 		protocols := map[string]uint32{}
-		for _, role := range []string{"nginx", "management", "background-jobs", "internal-ca", "log-query"} {
+		for _, role := range []string{"nginx", "management", "background-jobs", "log-query"} {
 			images[role] = image
 			protocols[role] = 1
 		}

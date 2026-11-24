@@ -15,6 +15,7 @@ import (
 	"gatebeam/internal/platform/jobs"
 	"gatebeam/internal/platform/postgres"
 	"gatebeam/internal/platform/secrets"
+	"gatebeam/internal/platform/transaction"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"io"
 	"net/http"
@@ -119,26 +120,66 @@ func ConfigureStatus(service *application.Service, path string) error {
 	if path == "" {
 		return nil
 	}
-	file, e := os.Open(path)
-	if e != nil {
-		return e
+	profiles, err := readStatusProfiles(path)
+	if err != nil {
+		return err
+	}
+	source, err := status.New(profiles)
+	if err != nil {
+		return err
+	}
+	service.SetStatus(source)
+	return nil
+}
+
+func readStatusProfiles(path string) ([]status.Profile, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
 	}
 	defer file.Close()
 	decoder := json.NewDecoder(io.LimitReader(file, 65537))
 	decoder.DisallowUnknownFields()
 	var profiles []status.Profile
-	if e = decoder.Decode(&profiles); e != nil {
-		return e
+	if err := decoder.Decode(&profiles); err != nil {
+		return nil, err
 	}
-	var extra any
-	if decoder.Decode(&extra) != io.EOF {
-		return errors.New("invalid status profiles")
+	if decoder.Decode(new(any)) != io.EOF {
+		return nil, errors.New("invalid status profiles")
 	}
-	source, e := status.New(profiles)
-	if e != nil {
-		return e
+	return profiles, nil
+}
+
+type standardLeafStatus struct{ verifier *status.LeafVerifier }
+
+func (s standardLeafStatus) ValidateLeafWithin(scope transaction.Scope, version application.StoredVersion, managed bool) error {
+	return s.verifier.Verify(scope.Context(), version, managed, time.Now())
+}
+
+func ConfigureStandardLeafStatus(service *application.Service, profilesFile, trustFile string) error {
+	profiles, err := readStatusProfiles(profilesFile)
+	if err != nil {
+		return err
 	}
-	service.SetStatus(source)
+	source, err := status.New(profiles)
+	if err != nil {
+		return err
+	}
+	file, err := os.Open(trustFile)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	const limit = 1 << 20
+	bundle, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil || len(bundle) > limit {
+		return status.ErrStatus
+	}
+	verifier, err := status.NewLeafVerifier(source, bundle)
+	if err != nil {
+		return err
+	}
+	service.SetLeafStatus(standardLeafStatus{verifier})
 	return nil
 }
 

@@ -76,7 +76,7 @@ func ready(role string, s lifecycle.Snapshot) bool {
 	if !s.Live || s.Mode != "serving" {
 		return false
 	}
-	caps := map[string][]string{"nginx": {lifecycle.Data}, "management": {lifecycle.Management}, "background-jobs": {lifecycle.GlobalJobs, lifecycle.LocalCleanup}, "internal-ca": {lifecycle.ACME, lifecycle.Status}, "log-query": {lifecycle.Query}}
+	caps := map[string][]string{"nginx": {lifecycle.Data}, "management": {lifecycle.Management}, "background-jobs": {lifecycle.GlobalJobs, lifecycle.LocalCleanup}, "log-query": {lifecycle.Query}}
 	for _, cap := range caps[role] {
 		if !s.Ready[cap] {
 			return false
@@ -207,11 +207,7 @@ func (h LocalHost) verifyTLS(ctx context.Context, kind string) error {
 	case "verify-public":
 		host, port, trustFile = edge.ManagementDomain, "443", edge.ManagementTrustFile
 	case "verify-private":
-		ca, e := h.config("internal-ca")
-		if e != nil {
-			return e
-		}
-		host, port, trustFile, owner = ca.CAHostname, "8444", ca.CARootFile, "internal-ca"
+		return h.externalCADirectory(ctx)
 	default:
 		return ErrOperation
 	}
@@ -246,10 +242,6 @@ func (h LocalHost) verifyTLS(ctx context.Context, kind string) error {
 	}}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	path := "/auth/session"
 	expected := 401
-	if kind == "verify-private" {
-		path = "/acme/server/directory"
-		expected = 200
-	}
 	req, _ := http.NewRequestWithContext(ctx, "GET", "https://"+host+path, nil)
 	r, e := client.Do(req)
 	if e != nil {
@@ -517,7 +509,7 @@ func (h LocalHost) Execute(ctx context.Context, s upgrade.Step) error {
 	}
 }
 
-var imageEnv = map[string]string{"nginx": "GATEBEAM_NGINX_IMAGE", "management": "GATEBEAM_MANAGEMENT_IMAGE", "background-jobs": "GATEBEAM_JOBS_IMAGE", "internal-ca": "GATEBEAM_CA_IMAGE", "log-query": "GATEBEAM_LOG_QUERY_IMAGE"}
+var imageEnv = map[string]string{"nginx": "GATEBEAM_NGINX_IMAGE", "management": "GATEBEAM_MANAGEMENT_IMAGE", "background-jobs": "GATEBEAM_JOBS_IMAGE", "log-query": "GATEBEAM_LOG_QUERY_IMAGE"}
 
 func (h LocalHost) update(ctx context.Context, s upgrade.Step) error {
 	if len(s.Images) == 0 {

@@ -33,7 +33,7 @@ func RenderNodeConfigs(ctx context.Context, r NodeRenderRequest) error {
 	if r.Node.Validate() != nil || r.PeerNode.Validate() != nil || r.Node.Node.ID == r.PeerNode.Node.ID || r.Node.PrivateAddress != r.PeerNode.PeerAddress || r.Node.PeerAddress != r.PeerNode.PrivateAddress || r.Node.EnvironmentFile != r.OutputDirectory+".env" || secrets.ValidateRoleRecipients(r.Recipients) != nil || !filepath.IsAbs(r.OutputDirectory) || filepath.Clean(r.OutputDirectory) != r.OutputDirectory {
 		return errors.New("invalid protected render inputs")
 	}
-	for _, role := range []string{"api", "provider", "notification", "ca", "leaf"} {
+	for _, role := range []string{"api", "provider", "notification", "leaf"} {
 		if len(r.Recipients[role]) < 2 || !slices.Contains(r.Recipients[role], r.NodeRecipients[role]) {
 			return errors.New("independent own recipient required for every role")
 		}
@@ -49,7 +49,7 @@ func RenderNodeConfigs(ctx context.Context, r NodeRenderRequest) error {
 		}
 	}
 	type roleTemplate struct{ mode, path, ip string }
-	templates := map[string]roleTemplate{"nginx": {"edge", "edge/edge.example.json", "172.31.0.2"}, "management": {"api", "edge/api.example.json", "172.31.0.3"}, "background-jobs": {"worker", "edge/worker.example.json", "172.31.0.5"}, "internal-ca": {"ca", "pki/ca.example.json", "172.31.0.6"}, "log-query": {"query", "query/query.example.json", "172.29.0.2"}}
+	templates := map[string]roleTemplate{"nginx": {"edge", "edge/edge.example.json", "172.31.0.2"}, "management": {"api", "edge/api.example.json", "172.31.0.3"}, "background-jobs": {"worker", "edge/worker.example.json", "172.31.0.5"}, "log-query": {"query", "query/query.example.json", "172.29.0.2"}}
 	configs := map[string][]byte{}
 	health := map[string]map[string]string{}
 	for _, node := range []domain.NodeDeployment{r.Node, r.PeerNode} {
@@ -87,7 +87,6 @@ func RenderNodeConfigs(ctx context.Context, r NodeRenderRequest) error {
 		c.CertificateRecipient = r.NodeRecipients["leaf"]
 		c.CertificateProviderRecipient = r.NodeRecipients["provider"]
 		c.NotificationRecipient = r.NodeRecipients["notification"]
-		c.CARecipient = r.NodeRecipients["ca"]
 		switch name {
 		case "nginx":
 			c.ManagementAPIAddress = net.JoinHostPort(r.Node.PrivateAddress, "9443")
@@ -159,7 +158,7 @@ func RenderNodeConfigs(ctx context.Context, r NodeRenderRequest) error {
 		privateBind = "[" + privateBind + "]"
 	}
 	fmt.Fprintf(&env, "COMPOSE_PROJECT_NAME=%s\nNODE_STORAGE_PREFIX=%s\nNODE_PRIVATE_ADDRESS=%s\nGATEBEAM_SECRET_ROOT=%s\nEDGE_BIND=0.0.0.0\n", r.Node.StoragePrefix, r.Node.StoragePrefix, privateBind, r.OutputDirectory)
-	names := map[string]string{"nginx": "NGINX", "management": "MANAGEMENT", "background-jobs": "JOBS", "internal-ca": "CA", "log-query": "LOG_QUERY"}
+	names := map[string]string{"nginx": "NGINX", "management": "MANAGEMENT", "background-jobs": "JOBS", "log-query": "LOG_QUERY"}
 	for _, name := range domain.NodeRoleNames() {
 		role := r.Node.Roles[name]
 		fmt.Fprintf(&env, "GATEBEAM_%s_IMAGE=%s\nGATEBEAM_%s_HEALTH_PORT=%d\n", names[name], role.Image, names[name], role.HealthPort)

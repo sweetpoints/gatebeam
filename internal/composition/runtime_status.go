@@ -50,7 +50,7 @@ func readRuntimeOverview(ctx context.Context, cfg bootstrap.Config) runtimeOverv
 		endpoint   string
 	}
 	var destinations []destination
-	roles := []string{"nginx", "management", "background-jobs", "internal-ca", "log-query"}
+	roles := []string{"nginx", "management", "background-jobs", "log-query"}
 	for _, node := range nodes {
 		current := runtimeNodeStatus{Node: node}
 		for _, role := range roles {

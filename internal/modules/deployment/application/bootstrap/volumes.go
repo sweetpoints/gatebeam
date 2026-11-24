@@ -27,7 +27,7 @@ type VolumeOperations interface {
 	Create(context.Context, Volume) error
 }
 
-var classes = []string{"edge-runtime", "edge-logs", "log-spool", "query-socket", "acme-challenges", "nginx-control", "management-control", "background-jobs-control", "internal-ca-control", "log-query-control", "api-capsules", "edge-capsules", "ca-capsules", "worker-capsules", "backup-spool"}
+var classes = []string{"edge-runtime", "edge-logs", "log-spool", "query-socket", "acme-challenges", "management-acme", "nginx-control", "management-control", "background-jobs-control", "log-query-control", "api-capsules", "edge-capsules", "worker-capsules", "backup-spool"}
 var volumeName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,100}$`)
 var privatePath = regexp.MustCompile(`^/[a-zA-Z0-9._/-]+$`)
 

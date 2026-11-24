@@ -18,6 +18,7 @@ import (
 func TestUpgradeTwoIndependentProjectsOnlyRecreatesSelectedRole(t *testing.T) {
 	lab := labfixture.Start(t)
 	ops := labfixture.NewUpgradeOperations(t, lab)
+	caInstance := labfixture.Docker(t, "inspect", "--format", "{{.Id}}/{{.State.StartedAt}}", lab.CAContainer)
 	tag := "gatebeam-owned-upgrade:" + strings.ToLower(time.Now().Format("150405000000000"))
 	dir := t.TempDir()
 	if e := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM gatebeam-api:local\nLABEL gatebeam.fixture.upgrade=\"selected-role\"\n"), 0600); e != nil {
@@ -33,7 +34,7 @@ func TestUpgradeTwoIndependentProjectsOnlyRecreatesSelectedRole(t *testing.T) {
 	image := labfixture.Docker(t, "image", "inspect", tag, "--format", "{{.Id}}")
 	desired := "registry.example/gatebeam/api@" + image
 	ops.Images[desired] = tag
-	inventory := upgrade.Inventory{Schema: 27, RoleSchema: 6, Compatible: true}
+	inventory := upgrade.Inventory{Schema: 27, RoleSchema: 7, Compatible: true}
 	unchanged := map[string]string{}
 	oldAPI := map[string]string{}
 	for _, n := range lab.Nodes {
@@ -75,8 +76,11 @@ func TestUpgradeTwoIndependentProjectsOnlyRecreatesSelectedRole(t *testing.T) {
 			t.Fatal("not rejoined")
 		}
 		for _, role := range domain.NodeRoleNames() {
-			n.Wait(t, role, map[string]string{"nginx": "data", "management": "management", "background-jobs": "global-jobs", "internal-ca": "ca", "log-query": "query"}[role])
+			n.Wait(t, role, map[string]string{"nginx": "data", "management": "management", "background-jobs": "global-jobs", "log-query": "query"}[role])
 		}
+	}
+	if got := labfixture.Docker(t, "inspect", "--format", "{{.Id}}/{{.State.StartedAt}}", lab.CAContainer); got != caInstance {
+		t.Fatal("gateway rolling upgrade restarted the external CA")
 	}
 	t.Log("real node-local management digests, bounded drain, persisted image approvals, two actual API container replacements, native API/CA/public readiness, unchanged Nginx and retained volumes; LB membership is an explicit owned fixture")
 }

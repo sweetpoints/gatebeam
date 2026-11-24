@@ -78,7 +78,7 @@ func ExecuteDeployment(ctx context.Context, plan upgrade.Plan, config, executor,
 	check := func(ctx context.Context) error {
 		var schema, roles int64
 		e := p.QueryRow(ctx, `SELECT (SELECT max(version_id) FROM goose_db_version WHERE is_applied),(SELECT max(version_id) FROM gatebeam_role_version WHERE is_applied)`).Scan(&schema, &roles)
-		if e != nil || schema != 27 || roles != 6 {
+		if e != nil || !domain.CurrentRuntimeContract().SupportsVersions(schema, roles) {
 			return upgrade.ErrInvalid
 		}
 		return nil

@@ -99,3 +99,47 @@ func TestHistoricalCapsulesPreserveKeysAndMissingHistoryFails(t *testing.T) {
 		t.Fatal("missing required historical capsule silently ignored")
 	}
 }
+
+func TestExternalCABackupDoesNotRequireOrAcceptAuthorityCapsules(t *testing.T) {
+	dir := t.TempDir()
+	recovery, err := agefmt.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	online, err := agefmt.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, source := filepath.Join(dir, "recovery"), filepath.Join(dir, "online")
+	for path, key := range map[string]*agefmt.X25519Identity{identity: recovery, source: online} {
+		if err := os.WriteFile(path, []byte(key.String()), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, role := range CapsuleRoles(true) {
+		if err := os.Mkdir(filepath.Join(dir, role), 0700); err != nil {
+			t.Fatal(err)
+		}
+		files := map[string]string{}
+		for _, name := range AllowedFiles(role) {
+			files[name] = source
+		}
+		if err := ExportCapsule(t.Context(), dir, role, "epoch", recovery.Recipient().String(), files); err != nil {
+			t.Fatal(err)
+		}
+	}
+	capsules, err := ReadCapsulesForCA(dir, "epoch", recovery.Recipient().String(), true)
+	if err != nil || len(capsules) != 3 {
+		t.Fatalf("gateway capsules: count=%d err=%v", len(capsules), err)
+	}
+	if _, err := OpenCapsulesForCA(capsules, "epoch", identity, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenCapsules(capsules, "epoch", identity); err == nil {
+		t.Fatal("legacy archive accepted without its CA capsule")
+	}
+	capsules["capsules/ca.age"] = capsules["capsules/api.age"]
+	if _, err := OpenCapsulesForCA(capsules, "epoch", identity, true); err == nil {
+		t.Fatal("gateway archive accepted an authority capsule")
+	}
+}

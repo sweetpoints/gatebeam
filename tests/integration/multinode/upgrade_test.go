@@ -28,7 +28,7 @@ import (
 
 func upgradePlan(t testing.TB, l *fixture.Lab, id, executor, scope, image string) upgrade.Plan {
 	t.Helper()
-	i := upgrade.Inventory{Schema: 27, RoleSchema: 6, Compatible: true}
+	i := upgrade.Inventory{Schema: 27, RoleSchema: 7, Compatible: true}
 	for _, n := range l.Nodes {
 		i.Nodes = append(i.Nodes, n.Info)
 	}
@@ -194,7 +194,7 @@ func TestWholeNodeMaintenanceRetainsOfflineBoot(t *testing.T) {
 	db := os.Getenv("GATEBEAM_TEST_DB_CONTAINER")
 	fixture.Docker(t, "network", "disconnect", l.Network, db)
 	for _, n := range l.Nodes {
-		n.Compose(t, "stop", "--timeout", "2", "management", "background-jobs", "internal-ca", "log-query")
+		n.Compose(t, "stop", "--timeout", "2", "management", "background-jobs", "log-query")
 	}
 	for _, n := range l.Nodes {
 		fixture.Docker(t, "network", "disconnect", n.Info.StoragePrefix+"_node-private", n.Router)
@@ -216,10 +216,10 @@ func TestWholeNodeMaintenanceRetainsOfflineBoot(t *testing.T) {
 	}
 	fixture.Docker(t, "network", "connect", "--alias", "database", l.Network, db)
 	for _, n := range l.Nodes {
-		n.Compose(t, "start", "management", "background-jobs", "internal-ca", "log-query")
+		n.Compose(t, "start", "management", "background-jobs", "log-query")
 		n.Wait(t, "management", lifecycle.Management)
 	}
-	t.Logf("five actual role processes restarted per node; %d new TLS requests, %d errors; SSE terminated; both node groups/networks recreated offline with retained volumes, no kernel reboot claim", requests.Load(), failures.Load())
+	t.Logf("four gateway processes restarted per node; %d new TLS requests, %d errors; SSE terminated; both node groups/networks recreated offline with retained volumes, no kernel reboot claim", requests.Load(), failures.Load())
 }
 
 type executorInput struct {

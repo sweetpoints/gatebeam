@@ -35,6 +35,7 @@ type Source struct {
 	UpstreamRenewedCertificateFile                                                                 string
 	PeerAPIAddress                                                                                 netip.AddrPort
 	UpstreamName, UpstreamTrustFile, UpstreamCertificateFile, UpstreamKeyFile, ManagementStateFile string
+	ManagementACMEWebRoot, ManagementACMEHost                                                      string
 	ACMEWebRoot                                                                                    string
 	Cloudflare                                                                                     CloudflareBindings
 	Materials                                                                                      MaterialBindings
@@ -124,7 +125,7 @@ func (s *Source) ReadWithin(sc transaction.Scope, snapshot app.Snapshot) (edge.R
 	managementBytes, _ := json.Marshal(management)
 	h.Write(managementBytes)
 	generation := hex.EncodeToString(h.Sum(nil))
-	state := edge.RuntimeState{ACMEWebRoot: s.ACMEWebRoot, Generation: generation, CertificateGeneration: generation, Now: time.Now(), LogDirectory: s.LogDirectory, ProtectedNetworks: s.ProtectedNetworks, Management: management}
+	state := edge.RuntimeState{ACMEWebRoot: s.ACMEWebRoot, ManagementACMEWebRoot: s.ManagementACMEWebRoot, ManagementACMEHost: s.ManagementACMEHost, Generation: generation, CertificateGeneration: generation, Now: time.Now(), LogDirectory: s.LogDirectory, ProtectedNetworks: s.ProtectedNetworks, Management: management}
 	if s.Materials != nil {
 		state, e = s.Materials.BindWithin(sc, snapshot, state)
 		if e != nil {

@@ -16,7 +16,7 @@ var ErrIdentity = errors.New("node incarnation or connection identity denied")
 var digest = regexp.MustCompile(`^[0-9a-f]{64}$`)
 var imageDigest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 var token = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,128}$`)
-var roles = []string{"nginx", "management", "background-jobs", "internal-ca", "log-query"}
+var roles = []string{"nginx", "management", "background-jobs", "log-query"}
 
 type Service struct {
 	audit Audit

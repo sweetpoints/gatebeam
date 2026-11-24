@@ -1,6 +1,6 @@
 # Gatebeam 双实例部署与升级
 
-这是部署输入及执行手册，不是已部署记录。生产运行模型是同一个 GCP 可用区内两台独立网关 VM，每台一个独立 Compose project，均运行 `nginx`、`management`、`background-jobs`、`internal-ca`、`log-query`。PostgreSQL 是外部 Cloud SQL 依赖，生产 Compose 不包含数据库，不讨论数据库高可用。本文中的项目名、域名、地址、资源引用和 digest 必须替换并核对；示例没有创建或保留任何云资源。
+这是部署输入及执行手册，不是已部署记录。生产运行模型是同一个 GCP 可用区内两台独立网关 VM，每台一个独立 Compose project，均运行 `nginx`、`management`、`background-jobs`、`log-query`。PostgreSQL 是外部 Cloud SQL 依赖，生产 Compose 不包含数据库。独立部署 [Gatebeam CA](../../gatebeam-ca/README.md)，为它配置单独的 PostgreSQL 数据库和账号。网关通过内网 DNS 访问 CA 的 ACME、OCSP 和 CRL 地址。本文中的项目名、域名、地址、资源引用和 digest 必须替换并核对；示例没有创建或保留任何云资源。
 
 ## 服务及入口
 
@@ -9,22 +9,21 @@
 | nginx | 同一进程树内的 Go supervisor 和 Nginx，确认后的本地启动基线、TLS/mTLS、OCSP DER 缓存、日志轮转 | 公网 80/443 映射容器 8080/8443；私网健康端口默认 19091 |
 | management | 同一个逻辑管理后台的两个 API/Web 副本，账号及会话共享 | 本机及对端网关通过私网 9443 和标准 mTLS 访问；健康端口默认 19092 |
 | background-jobs | PG 租约协调的全局任务，以及按节点归属的采集、归档和本地查询 | 外部 PG、供应商、R2；仅通过同机 Unix socket 访问 query；健康端口默认 19093 |
-| internal-ca | 同一逻辑 issuer 的两个副本，独立 age 身份，持有经过授权重封装的在线中间 CA 和独立 OCSP 签名材料 | 私网 ACME TLS 8444、标准 OCSP/CRL 8081；健康端口默认 19094 |
 | log-query | 同机 worker 调用的受限 DuckDB，R2 只读和同机 spool 只读 | 查询仅 Unix socket，不提供查询网络 API、不含 DB 登录；私网只读健康端口默认 19095 |
 
-公网入口使用 regional external passthrough Network Load Balancer，TLS 在 Nginx 终止。私网 CA 使用独立稳定的内部 L4 入口，逻辑 ACME/状态域名保持稳定，TLS 在 CA 终止。节点 manifest 分别记录两个 backend service 和本节点 instance group；按节点摘除各组成员，不能停止另一台网关。GCP LB、instance group、health check、DNS、TLS/防火墙和保留磁盘需单独准备，本地构建及测试不会修改它们。
+公网入口使用 regional external passthrough Network Load Balancer，TLS 在 Nginx 终止。私网 CA 使用独立稳定的内部 L4 入口，逻辑 ACME/状态域名保持稳定，TLS 在 CA 终止。节点 manifest 分别记录网关公网和私网入口的 backend service，以及本节点 instance group。滚动升级按节点摘除这两个网关入口的成员，独立 CA 的入口不参与变更。GCP LB、instance group、health check、DNS、TLS/防火墙和保留磁盘需单独准备，本地构建及测试不会修改它们。
 
-公网健康检查使用 `/readyz/data`；私网 CA backend 使用 `/readyz/ca`（ACME 和状态能力均就绪），`/readyz/acme`、`/readyz/status` 仍独立提供。健康端口只绑定 VM 私网地址并由防火墙限定来源。健康监听只有 GET 探针；维护、排空、管理上游排除只能通过角色专属的 0600 Unix socket。控制 socket 不属于公开管理账号权限。
+网关入口健康检查使用 `/readyz/data`。独立 CA 的验收使用 ACME 目录和签名 OCSP 响应。健康端口只绑定 VM 私网地址并由防火墙限定来源。健康监听只有 GET 探针；维护、排空、管理上游排除只能通过角色专属的 0600 Unix socket。控制 socket 不属于公开管理账号权限。
 
 容器中的 `172.31.0.x` 和 query 的 `172.29.0.x` 是各主机本地绑定，跨机上游必须使用 VM 的互通内网地址。两个宿主机可以有相同容器地址；地址不作为节点身份。节点/代次、PG 连接身份和注册的独立加密身份共同约束本地任务、证书信封及发布回执。
 
 ## 构建、迁移、初始化、运行分别执行
 
-1. 在 CI 或构建机器运行 `scripts/build-system.sh`，评审源 commit、检查结果和 `.work/artifacts/manifest.json`，发布获准的固定 registry digest。生产 manifest 的五个镜像都要求 `repository@sha256:...`；`.env.example` 的占位符不能用于部署。Compose 没有 build，也不会隐式迁移或初始化。
+1. 在 CI 或构建机器运行 `scripts/build-system.sh`，评审源 commit、检查结果和 `.work/artifacts/manifest.json`，发布获准的固定 registry digest。生产 manifest 的五个镜像（四个网关角色加独立 CA）都要求 `repository@sha256:...`；`.env.example` 的占位符不能用于部署。Compose 没有 build，也不会隐式迁移或初始化。
 2. 单独使用 `deploy/migration.example.json` 运行 `gatebeam --config ...`。配置的 mode 是 migrate，`migrate_roles` 显式开启时才执行 goose 的角色迁移；DDL 凭据只供这次操作。普通运行身份不具备 DDL/角色管理权限。将模式为 migrate、只引用 node-admin DB 文件的独立配置用于 `gatebeam-admin register-node/activate-nodes`，这两个命令不会执行迁移。
 3. 为两台 VM、每个角色、每次替换分别准备登录身份及独立 age 身份。运行组是受限 NOLOGIN 能力组；实际 LOGIN 由运维单独授权。登记 edge principal 和 background-jobs principal。不能把同一登录身份跨角色/跨节点复用，替换节点也不能只修改自报 epoch。
 4. 本机使用所属角色的一次性准备容器或该受控 OS 身份执行 `gatebeam-admin --operation prepare-role --config <该角色受控配置>`，只返回 public recipient。它保留已存在的密钥，不输出私钥，不把 A 的私钥复制到 B。准备配置需要真实 node_id/epoch 和本角色私有文件引用；准备目录只在这一步对所属身份可写，不使用生产的只读 secrets 挂载。公共 recipient 汇总后先生成全新的配置树，再将本机准备的秘密安装到对应本机角色目录；不能从对端复制私钥。prepare-role 不会要求尚未生成的 identity/signer 文件预先存在，也不连接数据库。不得给 query、management 或普通 worker 配置 CA 签名私钥。
-5. 使用本机和对端的公共 node manifest、完整公共角色 recipient policy、本机自己的 public recipient 映射构造 `render-node` 请求。`gatebeam-admin --operation render-node --request <文件>` 一次生成新目录内的五个角色 JSON 和相邻 `.env`；拒绝覆盖既有目录或环境文件。`node`、`peer_node`、`templates_directory`、`output_directory`、`recipients`、`node_recipients` 是请求字段；备份另提供离线 `backup_recipient` 和共同 `backup_epoch`。`NodeDeployment.roles[*].config_file` 必须与输出路径对应，`environment_file` 为 `<output_directory>.env`。A/B 的 API 上游顺序、UUID、健康端口和镜像 digest 由清单生成，不能直接将 A 的生成结果复制给 B。
+5. 使用本机和对端的公共 node manifest、完整公共角色 recipient policy、本机自己的 public recipient 映射构造 `render-node` 请求。`gatebeam-admin --operation render-node --request <文件>` 一次生成新目录内的四个角色 JSON 和相邻 `.env`；拒绝覆盖既有目录或环境文件。`node`、`peer_node`、`templates_directory`、`output_directory`、`recipients`、`node_recipients` 是请求字段；备份另提供离线 `backup_recipient` 和共同 `backup_epoch`。`NodeDeployment.roles[*].config_file` 必须与输出路径对应，`environment_file` 为 `<output_directory>.env`。A/B 的 API 上游顺序、UUID、健康端口和镜像 digest 由清单生成，不能直接将 A 的生成结果复制给 B。
 6. 独立安装本角色的 DB 文件、TLS/信任材料及 R2 权限文件；模板中的 `age1_REPLACE...`、域名、角色文件路径等必须替换。生成配置只有秘密引用，不会替用户生成或复制这些实际秘密。容器 UID/GID 为 101，角色目录及私有文件应由该身份读取；公共配置由本地受控部署身份管理，容器挂载只读。迁移、node-admin、离线恢复凭据不挂载给运行角色。
 
 `deploy/nodes/a.example.json` 和 `b.example.json` 是两个受控节点清单，示例私网地址为 10.42.0.30/31。`deploy/nodes/*.registration.example.json` 使用当前 owner 的登记结构；其中 `BootArtifactID` 填入下述登记参考值，`BridgeImages` 填入清单中获准镜像的 sha256 部分，`EncryptionRecipients` 填本机各角色的公共身份，`RolePrincipals.background-jobs` 填本机该代次的真实 DB 登录。
@@ -35,8 +34,8 @@
 
 ```
 edge-runtime  edge-logs  log-spool  query-socket  acme-challenges
-nginx-control  management-control  background-jobs-control  internal-ca-control  log-query-control
-api-capsules  edge-capsules  ca-capsules  worker-capsules  backup-spool
+nginx-control  management-control  background-jobs-control   log-query-control
+api-capsules  edge-capsules  worker-capsules  backup-spool
 ```
 
 raw logs 和 spool 必须位于与 runtime 不同的文件系统设备，可将专门日志盘上的目录 bind mount 到上述固定路径。配置持久挂载和磁盘保留，替换容器、升级、重启不得删除这些数据。未挂载磁盘时不能让同名空目录退回启动状态所在文件系统。`provision-node` 在任何写入前检查所有目录、全部现有卷的 node/epoch/class 标签与 bind 路径；只创建缺少的固定卷，创建后重新检查，不接管未知卷、不递归改权、不删除卷或日志。相同输入可重试；未知结果先重新观察，不能据超时判定创建未执行。
@@ -51,7 +50,7 @@ raw logs 和 spool 必须位于与 runtime 不同的文件系统设备，可将�
 - 在 edge 角色容器中先执行 `gatebeam-admin --operation prepare-management --config /run/gatebeam/edge.json`，创建初始私有上游维护状态；已有排除项/版本不会被重置。随后执行 `gatebeam --config /run/gatebeam/edge.json --preview-edge`。已有已验证发布时返回它的 artifact 参考；全新安装则编译本机管理入口的最小配置。它不启动 Nginx，不建立本机成功回执。参考用于受控登记，随后仍需真实验证。
 - 本地 operator 使用独立 node-admin DB 配置，执行 `gatebeam-admin --operation register-node --config <node-admin配置> --request <节点registration文件>`。没有登记/连接身份不符不能加载业务材料。
 - 在该节点执行 `docker compose --env-file <本机env> -f <compose文件> run --no-deps --rm nginx --config /run/gatebeam/edge.json --initialize-edge`。初始化在线重新检查授权，Nginx 实际校验、加载和探测后，保存完整本地材料/确认凭据及单调安全下限；同时建立本机标准 OCSP DER 缓存和新日志卷归属。已存在确认凭据时，初始化会拒绝，应走普通重启/升级流程。
-- `gatebeam-admin --operation inspect-boot --config <edge配置>` 输出确认的公开证据，不输出 PEM、私钥或业务材料。`docker compose ... up -d --no-build --no-deps nginx management background-jobs internal-ca log-query` 启动五个角色。确认每个角色、mTLS、管理会话和日志查询链路。
+- `gatebeam-admin --operation inspect-boot --config <edge配置>` 输出确认的公开证据，不输出 PEM、私钥或业务材料。`docker compose ... up -d --no-build --no-deps nginx management background-jobs log-query` 启动四个角色。确认每个角色、mTLS、管理会话和日志查询链路。
 - 两节点准备完毕，使用 `{ "nodes": [<A完整清单>, <B完整清单>] }` 请求执行 `gatebeam-admin --operation activate-nodes --config <node-admin配置> --request <文件>`。命令检查全部十个私网角色探针及当前确认 artifact/镜像/代次；有缺口拒绝激活。它只修改受控节点成员状态，不创建 LB/DNS、不替代实际业务验收。
 
 普通 `gatebeam --config edge.json` 从本机已确认基线先启动 Nginx，之后才尝试数据库/control 连接。PG、API、jobs、R2、CA 不可用不阻止已有基线重启；新盘、身份不符、损坏/恢复的旧基线或不可信时间不能假装普通离线重启。未知、缺失、过期或不匹配的 OCSP 证明拒绝受影响连接，不进行离线签名。配置回退不回退安全时间、已知吊销及信任下限。WebSocket/SSE/长请求不承诺一直保持。
@@ -82,9 +81,9 @@ Cloudflare DNS 仍由管理员手工切换，可保留两条入口记录，让�
 
 升级工具使用 `sh scripts/build-deploy.sh` 单独构建 `gatebeam-deploy` 和 `gatebeam-deploy-host`。前者运行在专用执行 VM；该 VM 不能是两台网关之一。后者仅作为网关宿主 root 拥有的一次性命令安装到 `/usr/local/bin/gatebeam-deploy-host`，不安装常驻服务，不接触业务服务器。在两台网关分别准备 root 只读受控 `/etc/gatebeam/host.json`，字段为 `node`（本机完整 NodeDeployment）和 `storage_root`（provision-node 的同一根目录），并创建 root 拥有的 0700 `/var/lib/gatebeam-upgrades`。使用 GCP OS Login/IAM、私网 SSH 和已核对的主机密钥；工具强制严格主机密钥检查。
 
-先用独立迁移身份执行现有 goose 命令，将 schema 扩展到 27、角色迁移到 6。升级批次自身依赖该日志表，不能先开始未记录的操作再创建日志。部署身份需读取 goose 版本记录并具有受控节点管理能力；普通运行角色不具有升级日志写权限。恢复到隔离数据库时，历史升级批次会被隔离，不能直接继续原批次。
+先用独立迁移身份执行现有 goose 命令，将 schema 扩展到 27、角色迁移到 7。升级批次自身依赖该日志表，不能先开始未记录的操作再创建日志。部署身份需读取 goose 版本记录并具有受控节点管理能力；普通运行角色不具有升级日志写权限。恢复到隔离数据库时，历史升级批次会被隔离，不能直接继续原批次。
 
-`gatebeam-deploy --dry-run --intent /path/intent.json` 只读取显式输入并向 stdout 输出计划。intent 包含 `request` 和 `inventory`；request 提供 `batch_id`、专用 `executor_instance`、`scope`（node、role 或 host）、role 模式下的 `role`，以及变更角色的固定 `images`。inventory 提供两台完整 `nodes`、`schema:27`、`role_schema:6`、已审阅桥接兼容性的 `compatible:true`。缺输入或错误拓扑会失败；该标记仍需实际执行的版本、角色、原镜像和健康检查佐证。dry-run 不读取 DB 密钥，不调用 gcloud，不创建锁、日志、缓存或临时文件。
+`gatebeam-deploy --dry-run --intent /path/intent.json` 只读取显式输入并向 stdout 输出计划。intent 包含 `request` 和 `inventory`；request 提供 `batch_id`、专用 `executor_instance`、`scope`（node、role 或 host）、role 模式下的 `role`，以及变更角色的固定 `images`。inventory 提供两台完整 `nodes`、`schema:27`、`role_schema:7`（升级前的角色版本 6 也可生成计划）、已审阅桥接兼容性的 `compatible:true`。缺输入或错误拓扑会失败；该标记仍需实际执行的版本、角色、原镜像和健康检查佐证。dry-run 不读取 DB 密钥，不调用 gcloud，不创建锁、日志、缓存或临时文件。
 
 确认输出后，实际运行命令为 `gatebeam-deploy --intent /path/intent.json --config /path/deployment-db.json --executor-instance projects/PROJECT/zones/ZONE/instances/EXECUTOR`。默认每节点排空 60 秒、重新加入后观察 120 秒，显式 drain_seconds/observe_seconds 可在受控范围调整。仅替换 digest 变化的角色；不执行 Compose build/down，不删除 runtime、日志或 spool。镜像先在两边预拉取，外层和私网成员均摘除后等待有限排空；冻结本节点有限的日志偏移，等待实际持久化游标；配置了归档时还必须取得对应批次已提交的归档凭据。worker 在维护模式下停止全局领任务，保留本地收尾，完成后再进入排空。任何缺失凭据都会暂停，不能把 fsync 视为已归档。
 
@@ -100,11 +99,11 @@ Cloudflare DNS 仍由管理员手工切换，可保留两条入口记录，让�
 
 实际预检还会在无网络、只读文件系统、无秘密/持久卷、cap-drop-ALL 的一次性容器中调用当前与候选固定镜像的 `gatebeam --runtime-contract`。输出必须声明本次 schema/角色迁移范围、runtime protocol 1、boot format 1 和 configuration format 2；不能仅凭 inventory 的兼容性确认绕过。该命令在读取任何配置之前返回编译清单。缺少该命令或不满足契约的镜像会被预检拒绝。
 
-实际云端执行还必须提供单节点峰值资格记录。可在 intent 增加 `capacity_report_file` 指向受保护 JSON；其内容为 `kind:production`、真实 `required_peak_rps` 和 `trials`。每份 trial 绑定 `node{id,epoch}`、完整 GCP `machine_type` 资源名、五个角色的精确 `images`、每角色 `limits{memory_bytes,nano_cpus,pids}`、`duration_seconds`、`requests`、`errors`、`p95_millis` 和实际 `workload` 描述。两节点的当前及候选镜像组合均须覆盖；相同组合可复用同一 trial。每份至少 10 秒、零错误，测得成功率须达到声明峰值。工具固化规范化内容摘要，并在云端重新核对 VM 类型、宿主实际容器资源限制和固定镜像。该记录必须来自可信的实际测量及人工核对，工具不会凭一个“兼容”确认推断真实业务峰值。没有记录时仍可查看 dry-run 计划，但实际执行会在读取 DB 配置/进行云操作之前被拒绝。
+实际云端执行还必须提供单节点峰值资格记录。可在 intent 增加 `capacity_report_file` 指向受保护 JSON；其内容为 `kind:production`、真实 `required_peak_rps` 和 `trials`。每份 trial 绑定 `node{id,epoch}`、完整 GCP `machine_type` 资源名、四个角色的精确 `images`、每角色 `limits{memory_bytes,nano_cpus,pids}`、`duration_seconds`、`requests`、`errors`、`p95_millis` 和实际 `workload` 描述。两节点的当前及候选镜像组合均须覆盖；相同组合可复用同一 trial。每份至少 10 秒、零错误，测得成功率须达到声明峰值。工具固化规范化内容摘要，并在云端重新核对 VM 类型、宿主实际容器资源限制和固定镜像。该记录必须来自可信的实际测量及人工核对，工具不会凭一个“兼容”确认推断真实业务峰值。没有记录时仍可查看 dry-run 计划，但实际执行会在读取 DB 配置/进行云操作之前被拒绝。
 
 本地完整双节点关卡为：`sh scripts/check-multinode.sh --manifest .work/artifacts/manifest.json --nodes tests/fixtures/multinode/config.json --budget tests/fixtures/multinode/budget.json`。先执行 `sh scripts/build-system.sh` 取得五个固定预构建镜像及 manifest；关卡核对真实镜像 ID、二进制摘要、离线契约和不变资源预算，不用替换二进制绕过最终镜像。可用 `--suite runtime|control|upgrade|capacity` 单独运行；每个场景拥有独立外部测试 PG，使用统一数据库批次的300秒整包累计保护（命令315秒），由完整验收执行器运行时，10个场景仍共享600秒阶段保护；这些是 CI 总钟，明确的请求、故障、续期及查询功能期限和角色资源预算保留，缺场景不能以“无测试”通过。节点输入仅接受维护中的隔离双 Compose 模板，不接受生产主机。辅助 S3 使用固定 RustFS 测试镜像及一次性凭据，不代表已验收 Cloudflare IAM。
 
-容量关卡停止 B 的五个角色，由 A 承担新的业务 TLS 连接和真实 S3 归档/DuckDB 查询，记录每档并发、错误、延迟、吞吐、查询完成数及 Docker 资源。测量报告位于 `.work/system-acceptance/multinode/single-node-capacity.json`，明确为 `kind:fixture`，真实业务峰值未知；该报告不能用于生产资格。测试环境是同一个 Docker/Lima VM，包含本地 S3 和私网 HTTP 测试后端，其网络和硬件条件不同于 GCP/R2。报告的是这些条件下的实测值，不是生产容量承诺。节点级故障通过五个角色及网络的销毁/重建、保留卷和断开控制连接模拟；真实 GCP 内核重启、LB 数据路径、供应商权限及逐站 DNS 迁移仍须在后续明确授权的环境验收。
+容量关卡停止 B 的四个角色，由 A 承担新的业务 TLS 连接和真实 S3 归档/DuckDB 查询，记录每档并发、错误、延迟、吞吐、查询完成数及 Docker 资源。测量报告位于 `.work/system-acceptance/multinode/single-node-capacity.json`，明确为 `kind:fixture`，真实业务峰值未知；该报告不能用于生产资格。测试环境是同一个 Docker/Lima VM，包含本地 S3 和私网 HTTP 测试后端，其网络和硬件条件不同于 GCP/R2。报告的是这些条件下的实测值，不是生产容量承诺。节点级故障通过四个角色及网络的销毁/重建、保留卷和断开控制连接模拟；真实 GCP 内核重启、LB 数据路径、供应商权限及逐站 DNS 迁移仍须在后续明确授权的环境验收。
 
 
 ## 升级的功能验证与凭据
@@ -132,7 +131,7 @@ API、CA 和网关至 API 的客户端证书使用原有角色进程内的标准
 
 `origin` 为现有内部 CA 根地址，客户端按用途选择标准目录。默认每 60 秒检查，在证书剩余有效期进入原有效期三分之一时续期；测试中的短周期不是生产承诺。初次启用后自动取得正式证书，后续使用原 ACME 账号和本角色既有私钥续期，EAB 无须每次人工重建。公有证书输出原子写入本角色保留 capsule 目录的 `renewed-tls.pem`，API/CA 在 TLS 握手时自动加载，网关自动触发本节点派生配置加载，无须手工发布业务配置。失败时保留仍有效的已加载证书，过期则不再就绪。
 
-共享管理和 CA 服务域名需要标准 HTTP-01 请求能到达任一当前网关的挑战目录；CA 私网 VIP 除 8444/8081 外须在受限内网开放 TCP 80 到两台 Nginx。节点客户端证书使用各自节点专属的内网域名，其 TCP 80 仅指向该节点，通过本机独立挑战日志验证。节点角色不能向两节点发布任意公网挑战；共享角色的数据库发布权限仅接受内部 CA 实际订单与账号 thumbprint 匹配的 token/keyAuthorization。标准 ACME 报文、DNS 与 HTTP 验证均不修改。
+网关节点的私网 mTLS 客户端使用节点专属 DNS 名称，CA 经 TCP 80 验证其 HTTP-01 响应。管理 API 使用本地挑战目录时，证书中的每个 DNS 名称都必须能把该客户端的 HTTP-01 请求路由到正确节点。专用管理目录只在相应的 HTTP 虚拟主机暴露挑战路径。CA 的 ACME 与状态端口由独立 CA 主机提供，CA 的数据库和签名材料由 CA 运维单独备份。
 
 API 私网 mTLS 的信任链与撤销信息会自动重读；受控 `certificate_status_profiles_file` 中指定可信发行者及固定 CRL 地址，程序定期获取原始签名 CRL，禁止使用客户端自带 AIA 指挥出站。完整链逐级检查签名、用途、时效和撤销；只把自签名根作为锚点。`api_tls_crl_file` 提供初始 CRL，`api_tls_state_file` 必须位于本 API 的独立保留私有卷，保存与节点/epoch 绑定的撤销和时间下限。缺失、过期、篡改或回退的状态拒绝新连接；会话票据关闭，避免恢复会话绕过检查。管理员可按已有连接管理操作主动断开旧连接，不承诺一分钟内全部吊销生效。
 

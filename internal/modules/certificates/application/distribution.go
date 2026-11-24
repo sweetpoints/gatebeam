@@ -56,7 +56,7 @@ func (d *Distribution) available(sc transaction.Scope, id string) (StoredVersion
 		return StoredVersion{}, domain.ErrUnavailable
 	}
 	managed := v.EnrollmentProvider == "internal-client" || v.EnrollmentProvider == "internal-server"
-	if e := d.status.ValidateLeafWithin(sc, v.Version, managed); e != nil {
+	if e := d.status.ValidateLeafWithin(sc, v, managed); e != nil {
 		return StoredVersion{}, e
 	}
 	if !v.Usable(d.now()) {

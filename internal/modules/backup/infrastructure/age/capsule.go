@@ -201,7 +201,16 @@ func readRole(dir, role string, ref capsuleRef) (map[string][]byte, error) {
 	}
 	return out, nil
 }
+func CapsuleRoles(externalCA bool) []string {
+	if externalCA {
+		return []string{"api", "edge", "worker"}
+	}
+	return Roles
+}
 func ReadCapsules(dir, epoch, recipient string) (map[string][]byte, error) {
+	return ReadCapsulesForCA(dir, epoch, recipient, false)
+}
+func ReadCapsulesForCA(dir, epoch, recipient string, externalCA bool) (map[string][]byte, error) {
 	if !domain.ValidEpoch(epoch) {
 		return nil, domain.ErrInvalid
 	}
@@ -209,7 +218,7 @@ func ReadCapsules(dir, epoch, recipient string) (map[string][]byte, error) {
 	var ownerNode string
 	var ownerEpoch uint64
 	var ownerSet bool
-	for _, role := range Roles {
+	for _, role := range CapsuleRoles(externalCA) {
 		b, e := ReadRegular(filepath.Join(dir, role, "current.json"), 4096)
 		if e != nil {
 			return nil, e
@@ -233,6 +242,16 @@ func ReadCapsules(dir, epoch, recipient string) (map[string][]byte, error) {
 	return out, nil
 }
 func OpenCapsules(files map[string][]byte, epoch, identity string) (map[string][]byte, error) {
+	return OpenCapsulesForCA(files, epoch, identity, false)
+}
+func OpenCapsulesForCA(files map[string][]byte, epoch, identity string, externalCA bool) (map[string][]byte, error) {
+	if externalCA {
+		for label := range files {
+			if label == "capsules/ca.age" || strings.HasPrefix(label, "capsules/ca-") {
+				return nil, domain.ErrInvalid
+			}
+		}
+	}
 	raw, e := ReadRegular(identity, 4096)
 	if e != nil {
 		return nil, e
@@ -250,7 +269,7 @@ func OpenCapsules(files map[string][]byte, epoch, identity string) (map[string][
 	var ownerNode string
 	var ownerEpoch uint64
 	var ownerSet bool
-	for _, role := range Roles {
+	for _, role := range CapsuleRoles(externalCA) {
 		current := files["capsules/"+role+".age"]
 		body, e := Decrypt(current, identity)
 		if e != nil {

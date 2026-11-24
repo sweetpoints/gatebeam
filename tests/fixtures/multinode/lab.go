@@ -9,6 +9,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -47,8 +48,8 @@ import (
 	"time"
 )
 
-var Modes = map[string]string{"nginx": "edge", "management": "api", "background-jobs": "worker", "internal-ca": "ca", "log-query": "query"}
-var HealthPorts = map[string]int{"nginx": 19091, "management": 19092, "background-jobs": 19093, "internal-ca": 19094, "log-query": 19095}
+var Modes = map[string]string{"nginx": "edge", "management": "api", "background-jobs": "worker", "log-query": "query"}
+var HealthPorts = map[string]int{"nginx": 19091, "management": 19092, "background-jobs": 19093, "log-query": 19095}
 
 type Node struct {
 	portsMu             sync.Mutex
@@ -58,18 +59,20 @@ type Node struct {
 	Secrets             map[string]string
 	Configs             map[string]bootstrap.Config
 	APIClient           *http.Client `json:"-"`
+	CAAddress           string
 	CAClient            *http.Client `json:"-"`
 	PublicClient        *http.Client `json:"-"`
 }
 type Lab struct {
-	TestIssuer       *pkicrypto.Issuer `json:"-"`
-	BusinessInstance *Business
-	CanarySiteID     string
-	Pool             *pgxpool.Pool
-	Nodes            []*Node
-	Trust            []byte
-	Network          string
-	Run              string
+	TestIssuer                          *pkicrypto.Issuer `json:"-"`
+	BusinessInstance                    *Business
+	CanarySiteID                        string
+	Pool                                *pgxpool.Pool
+	Nodes                               []*Node
+	Trust                               []byte
+	CAAddress, CAContainer, CADirectory string
+	Network                             string
+	Run                                 string
 }
 
 func Docker(t testing.TB, args ...string) string {
@@ -298,7 +301,7 @@ func (l *Lab) Activate(t testing.TB) {
 	t.Helper()
 	proof := []nodes.ActivationProbe{}
 	for _, n := range l.Nodes {
-		for role, caps := range map[string][]string{"nginx": {lifecycle.Data}, "management": {lifecycle.Management}, "background-jobs": {lifecycle.GlobalJobs, lifecycle.LocalCleanup}, "internal-ca": {lifecycle.ACME, lifecycle.Status}, "log-query": {lifecycle.Query}} {
+		for role, caps := range map[string][]string{"nginx": {lifecycle.Data}, "management": {lifecycle.Management}, "background-jobs": {lifecycle.GlobalJobs, lifecycle.LocalCleanup}, "log-query": {lifecycle.Query}} {
 			for _, cap := range caps {
 				// Initial owned lab startup is preparation, not fault recovery.
 				n.wait(t, role, cap, cleanupBudget(10*time.Second))
@@ -409,14 +412,9 @@ func Start(t testing.TB) *Lab {
 	keys := []map[string]string{{}, {}}
 	own := []map[string]string{{}, {}}
 	for i := 0; i < 2; i++ {
-		for _, role := range []string{"api", "provider", "notification", "ca", "leaf"} {
+		for _, role := range []string{"api", "provider", "notification", "leaf"} {
 			path := filepath.Join(root, fmt.Sprintf("%d-%s.agekey", i, role))
-			if i == 0 && role == "ca" {
-				raw, _ := os.ReadFile(caConfig.IdentityFile)
-				if e = os.WriteFile(path, raw, 0600); e != nil {
-					t.Fatal(e)
-				}
-			} else if e = secrets.EnsureIdentity(path); e != nil {
+			if e = secrets.EnsureIdentity(path); e != nil {
 				t.Fatal(e)
 			}
 			s, e := secrets.New(path)
@@ -428,9 +426,21 @@ func Start(t testing.TB) *Lab {
 			policies[role] = append(policies[role], s.Recipient())
 		}
 	}
-	if e = pkicrypto.RewrapOnlineSigners(t.Context(), caConfig, filepath.Join(online, "root-ocsp.age"), policies["ca"]); e != nil {
+	caRoot, err := os.MkdirTemp(filepath.Join(project, ".work"), "dual-ca-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(caRoot); err != nil {
+			t.Error(err)
+		}
+	})
+	if e := os.Rename(online, filepath.Join(caRoot, "online")); e != nil {
 		t.Fatal(e)
 	}
+	online = filepath.Join(caRoot, "online")
+	caCert, caKey := pair("ca.dual.test", pkidomain.ServerAuth)
+	lab.startCA(t, caRoot, caCert, caKey)
 	images := map[string]string{}
 	for role, mode := range Modes {
 		images[role] = prepareDocker(t, "image", "inspect", "gatebeam-"+mode+":local", "--format", "{{.Id}}")
@@ -474,7 +484,7 @@ func Start(t testing.TB) *Lab {
 				write(role, "database", []byte(u.String()))
 			}
 		}
-		for role, field := range map[string]string{"management": "api", "nginx": "leaf", "internal-ca": "ca"} {
+		for role, field := range map[string]string{"management": "api", "nginx": "leaf"} {
 			raw, _ := os.ReadFile(keys[i][field])
 			write(role, "identity.agekey", raw)
 		}
@@ -484,6 +494,23 @@ func Start(t testing.TB) *Lab {
 		}
 		for _, role := range []string{"nginx", "management", "background-jobs"} {
 			write(role, "roots.pem", trust)
+		}
+		issuerPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: issuer.Certificate.Raw})
+		rootBlock, _ := pem.Decode(trust)
+		rf := fmt.Sprintf("%x", sha256.Sum256(rootBlock.Bytes))
+		inf := string(issuer.Metadata().ID)
+		statusProfiles, err := json.Marshal([]map[string]any{{
+			"id": "external-ca", "fingerprints": []string{rf, inf},
+			"crl_urls":         map[string]string{rf: caStatusOrigin + "/crl/root.der", inf: caStatusOrigin + "/crl/" + inf + ".der"},
+			"ocsp_urls":        map[string]string{rf: caStatusOrigin + "/ocsp", inf: caStatusOrigin + "/ocsp"},
+			"allowed_networks": []string{"10.254.248.15/32"}, "resolver_servers": []string{"127.0.0.11:53"},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, role := range []string{"nginx", "management"} {
+			write(role, "ca-status-trust.pem", append(append([]byte{}, trust...), issuerPEM...))
+			write(role, "ca-status-profiles.json", statusProfiles)
 		}
 		write("nginx", "management.pem", mgmtCert)
 		write("nginx", "management.key", mgmtKey)
@@ -504,22 +531,14 @@ func Start(t testing.TB) *Lab {
 		clientCert, clientKey := pair("gateway-"+label+".dual.test", pkidomain.ClientAuth)
 		write("nginx", "api-client.pem", clientCert)
 		write("nginx", "api-client.key", clientKey)
-		caCert, caKey := pair("ca.dual.test", pkidomain.ServerAuth)
-		write("internal-ca", "tls.pem", caCert)
-		write("internal-ca", "tls.key", caKey)
-		for _, file := range []string{"issuer.pem", "issuer.age", "root.pem", "root.crl.der", "root-ocsp.pem", "root-ocsp.age"} {
-			raw, e := os.ReadFile(filepath.Join(online, file))
-			if e != nil {
-				t.Fatal(e)
-			}
-			write("internal-ca", file, raw)
-		}
 		write("log-query", "r2.json", []byte(`{"endpoint":"http://127.0.0.1:1","bucket":"owned","region":"us-east-1","AccessKey":"owned-read","SecretKey":"owned-read"}`))
-		roleIP := map[string]string{"nginx": mainBase + "2", "management": mainBase + "3", "background-jobs": mainBase + "5", "internal-ca": mainBase + "6", "log-query": queryBase + "2"}
+		roleIP := map[string]string{"nginx": mainBase + "2", "management": mainBase + "3", "background-jobs": mainBase + "5", "log-query": queryBase + "2"}
 		common := func(role string) bootstrap.Config {
 			return bootstrap.Config{Environment: "production", Mode: Modes[role], RuntimeProtocol: 1, NodeID: node.Info.Node.ID, NodeEpoch: 1, ImageDigest: images[role], HealthListen: roleIP[role] + ":9090", ControlSocket: "/run/control/control.sock", DrainSeconds: 1, EncryptionRecipients: policies}
 		}
 		edge := common("nginx")
+		edge.CertificateStatusTrustFile = "/run/gatebeam/ca-status-trust.pem"
+		edge.CertificateStatusProfilesFile = "/run/gatebeam/ca-status-profiles.json"
 		edge.DatabaseFile = "/run/gatebeam/database"
 		edge.EdgeRoot = "/var/lib/gatebeam"
 		edge.CertificateIdentityFile = "/run/gatebeam/identity.agekey"
@@ -537,9 +556,12 @@ func Start(t testing.TB) *Lab {
 		edge.ManagementAPIClientKeyFile = "/run/gatebeam/api-client.key"
 		edge.ManagementAPIStateFile = "/run/control/management-upstreams.json"
 		edge.ACMEWebRoot = "/var/lib/gatebeam/acme"
+		edge.ManagementACMEWebRoot = "/var/lib/gatebeam/management-acme"
 		edge.ProtectedNetworks = []string{vm + "/32", peer + "/32", dbIP + "/32"}
 		node.Configs["nginx"] = edge
 		api := common("management")
+		api.CertificateStatusTrustFile = "/run/gatebeam/ca-status-trust.pem"
+		api.CertificateStatusProfilesFile = "/run/gatebeam/ca-status-profiles.json"
 		api.DatabaseFile = "/run/gatebeam/database"
 		api.IdentityFile = "/run/gatebeam/identity.agekey"
 		api.APIListen = roleIP["management"] + ":9443"
@@ -558,7 +580,9 @@ func Start(t testing.TB) *Lab {
 		api.CertificateRecipient = own[i]["leaf"]
 		api.CertificateProviderRecipient = own[i]["provider"]
 		api.NotificationRecipient = own[i]["notification"]
-		api.CARecipient = own[i]["ca"]
+		api.CAOrigin = caOrigin
+		api.CAStatusOrigin = caStatusOrigin
+		api.CertificateACMETransportTrustFile = "/run/gatebeam/roots.pem"
 		api.CAServerNames = []string{"service.dual.test", "management-api.dual.test", "ca.dual.test"}
 		api.CAClientNames = []string{"gateway-a.dual.test", "gateway-b.dual.test"}
 		node.Configs["management"] = api
@@ -573,27 +597,9 @@ func Start(t testing.TB) *Lab {
 		worker.LogSpoolDirectory = "/var/lib/gatebeam/spool"
 		worker.QuerySocket = "/run/query/query.sock"
 		worker.ACMEWebRoot = "/var/lib/gatebeam/acme"
+		worker.CAOrigin = caOrigin
+		worker.CertificateACMETransportTrustFile = "/run/gatebeam/roots.pem"
 		node.Configs["background-jobs"] = worker
-		ca := common("internal-ca")
-		ca.DatabaseFile = "/run/gatebeam/database"
-		ca.CAIdentityFile = "/run/gatebeam/identity.agekey"
-		ca.CASignerFile = "/run/gatebeam/issuer.age"
-		ca.CACertificateFile = "/run/gatebeam/issuer.pem"
-		ca.CARootFile = "/run/gatebeam/root.pem"
-		ca.CARootCRLFile = "/run/gatebeam/root.crl.der"
-		ca.CARootOCSPCertificateFile = "/run/gatebeam/root-ocsp.pem"
-		ca.CARootOCSPSignerFile = "/run/gatebeam/root-ocsp.age"
-		ca.CATLSCertificateFile = "/run/gatebeam/tls.pem"
-		ca.CATLSKeyFile = "/run/gatebeam/tls.key"
-		ca.CAListen = roleIP["internal-ca"] + ":8444"
-		ca.CAStatusListen = roleIP["internal-ca"] + ":8081"
-		ca.CAHostname = "ca.dual.test"
-		ca.CAOrigin = "https://ca.dual.test:8444"
-		ca.CAStatusOrigin = "http://ca.dual.test:8081"
-		ca.CAValidationNetworks = []string{"10.254.248.0/24"}
-		ca.CAServerNames = []string{"service.dual.test", "management-api.dual.test", "ca.dual.test"}
-		ca.CAClientNames = []string{"gateway-a.dual.test", "gateway-b.dual.test"}
-		node.Configs["internal-ca"] = ca
 		query := common("log-query")
 		query.QueryCredentialsFile = "/run/gatebeam/r2.json"
 		query.QuerySocket = "/run/query/query.sock"
@@ -654,14 +660,14 @@ func Start(t testing.TB) *Lab {
 		// Register before starting any consumer; a partial startup must also
 		// quiesce every already-created peer before database role cleanup.
 		consumers = append(consumers, node)
-		routes := map[string]string{"0.0.0.0:80": roleIP["nginx"] + ":8080", "0.0.0.0:443": roleIP["nginx"] + ":8443", "0.0.0.0:9443": roleIP["management"] + ":9443", "0.0.0.0:8444": roleIP["internal-ca"] + ":8444", "0.0.0.0:8081": roleIP["internal-ca"] + ":8081", mainBase + "4:5432": "database:5432"}
+		routes := map[string]string{"0.0.0.0:80": roleIP["nginx"] + ":8080", "0.0.0.0:443": roleIP["nginx"] + ":8443", "0.0.0.0:9443": roleIP["management"] + ":9443", mainBase + "4:5432": "database:5432"}
 		for role, port := range HealthPorts {
 			routes["0.0.0.0:"+fmt.Sprint(port)] = roleIP[role] + ":9090"
 		}
 		routeFile := filepath.Join(dir, "routes.json")
 		raw, _ = json.Marshal(routes)
 		os.WriteFile(routeFile, raw, 0444)
-		routerArgs := []string{"create", "--name", node.Router, "--label", "gatebeam.fixture.run=" + run, "--user", "101:101", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--memory", "128m", "--cpus", "0.5", "--pids-limit", "64", "--sysctl", "net.ipv4.ip_unprivileged_port_start=0", "--network", network, "--ip", vm, "--network-alias", "ca.dual.test", "--network-alias", "management-api.dual.test", "--network-alias", "gateway-" + label + ".dual.test", "--mount", "type=bind,src=" + probe + ",dst=/router.test,readonly", "-e", "GATEBEAM_TEST_TCP_ROUTES=env", "-e", "GATEBEAM_TEST_TCP_ROUTES_JSON=" + string(raw), "--entrypoint", "/router.test"}
+		routerArgs := []string{"create", "--name", node.Router, "--label", "gatebeam.fixture.run=" + run, "--user", "101:101", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--memory", "128m", "--cpus", "0.5", "--pids-limit", "64", "--sysctl", "net.ipv4.ip_unprivileged_port_start=0", "--network", network, "--ip", vm, "--network-alias", "gateway-" + label + ".dual.test", "--mount", "type=bind,src=" + probe + ",dst=/router.test,readonly", "-e", "GATEBEAM_TEST_TCP_ROUTES=env", "-e", "GATEBEAM_TEST_TCP_ROUTES_JSON=" + string(raw), "--entrypoint", "/router.test"}
 		for _, port := range []int{80, 443, 9443, 8444, 8081, 19091, 19092, 19093, 19094, 19095} {
 			routerArgs = append(routerArgs, "-p", "127.0.0.1::"+fmt.Sprint(port))
 		}
@@ -674,6 +680,9 @@ func Start(t testing.TB) *Lab {
 				t.Error("owned node Compose cleanup failed", e)
 			}
 		})
+		if i == 0 {
+			routerArgs = append(routerArgs[:1], append([]string{"--network-alias", "management-api.dual.test"}, routerArgs[1:]...)...)
+		}
 		prepareDocker(t, routerArgs...)
 		node.prepareCompose(t, "create", "--no-build")
 		prepareDocker(t, "network", "connect", "--ip", mainBase+"4", name+"_node-private", node.Router)
@@ -724,7 +733,7 @@ func Start(t testing.TB) *Lab {
 			t.Fatal(e)
 		}
 		node.prepareCompose(t, "run", "--no-deps", "--rm", "-T", "nginx", "--config", "/run/gatebeam/edge.json", "--initialize-edge")
-		node.prepareCompose(t, "start", "nginx", "management", "background-jobs", "internal-ca", "log-query")
+		node.prepareCompose(t, "start", "nginx", "management", "background-jobs", "log-query")
 		rootPool := x509.NewCertPool()
 		rootPool.AppendCertsFromPEM(trust)
 		tlsClient := func(host, address string, certificate *tls.Certificate) *http.Client {
@@ -742,7 +751,8 @@ func Start(t testing.TB) *Lab {
 			t.Fatal(e)
 		}
 		node.APIClient = tlsClient("management-api.dual.test", node.Port(t, 9443), &pair)
-		node.CAClient = tlsClient("ca.dual.test", node.Port(t, 8444), nil)
+		node.CAAddress = lab.CAAddress
+		node.CAClient = tlsClient("ca.dual.test", lab.CAAddress, nil)
 	}
 	lab.Activate(t)
 	verifyRoleBudgets(t, lab)

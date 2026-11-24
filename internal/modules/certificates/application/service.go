@@ -338,7 +338,7 @@ func (s *Service) readMaterials(sc transaction.Scope, refs []MaterialRef, privat
 			// require renewal (or a fresh import revision), never guess provenance
 			// from a mutable provider account or display issuer DN.
 			managed := v.EnrollmentProvider == "internal-client" || v.EnrollmentProvider == "internal-server"
-			if s.leafStatus == nil || (spec.Automatic() && v.EnrollmentProvider == "") || s.leafStatus.ValidateLeafWithin(sc, v.Version, managed) != nil {
+			if s.leafStatus == nil || (spec.Automatic() && v.EnrollmentProvider == "") || s.leafStatus.ValidateLeafWithin(sc, v, managed) != nil {
 				return Materials{}, domain.ErrUnavailable
 			}
 			// Expected DNS names are validated against the actual certificate by crypto.

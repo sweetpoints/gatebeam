@@ -6,7 +6,7 @@ case "$gatebeam_go_parallelism" in 2|4) ;; *) echo 'Go gate parallelism must be 
 # Verification requires Python 3 on macOS/Linux for wall-clock deadlines.
 command -v python3 >/dev/null 2>&1 || { echo "Python 3 is required for bounded verification" >&2; exit 127; }
 python3 tests/architecture/test_bounded_command.py
-files=$(find cmd internal db tests/architecture -name '*.go' -type f)
+files=$(find cmd internal db tests/architecture gatebeam-ca -name '*.go' -type f)
 if [ -n "$(gofmt -l $files)" ]; then
   echo 'Go files need gofmt' >&2
   gofmt -d $files >&2
@@ -17,9 +17,9 @@ set --
 echo "START go vet $(date -u +%FT%TZ)"
 # Type-check integration-tagged fixtures here too, before expensive runtime groups.
 # Vet does not execute tests or start their services.
-python3 scripts/aggregate-command.py 120 go vet "$@" -tags integration -p 2 ./...
+python3 scripts/aggregate-command.py 120 go vet "$@" -tags integration -p 2 ./... ./gatebeam-ca/...
 [ "${GATEBEAM_GO_TRACE:-0}" != 1 ] || set -- -x -json
 echo "START go test $(date -u +%FT%TZ) parallelism=$gatebeam_go_parallelism"
-python3 scripts/aggregate-command.py 120 go test "$@" ./... -count=1 -p "$gatebeam_go_parallelism" -timeout 90s
+python3 scripts/aggregate-command.py 120 go test "$@" ./... ./gatebeam-ca/... -count=1 -p "$gatebeam_go_parallelism" -timeout 90s
 echo "START architecture checks $(date -u +%FT%TZ)"
 scripts/check-architecture.sh

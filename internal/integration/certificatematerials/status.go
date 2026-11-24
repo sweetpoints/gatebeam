@@ -8,6 +8,6 @@ import (
 
 type LeafStatus struct{ Owner *pki.Materials }
 
-func (a LeafStatus) ValidateLeafWithin(sc transaction.Scope, v cert.Version, managed bool) error {
+func (a LeafStatus) ValidateLeafWithin(sc transaction.Scope, v cert.StoredVersion, managed bool) error {
 	return a.Owner.ValidateWithin(sc, pki.LeafIdentity{IssuerKey: v.IssuerKeyFingerprint, Serial: v.Serial, DERDigest: v.LeafFingerprint, Managed: managed})
 }

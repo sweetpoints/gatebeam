@@ -291,7 +291,9 @@ func checkOCSP(ctx context.Context, client *http.Client, endpoint string, cert, 
 	if e != nil {
 		return time.Time{}, ErrStatus
 	}
+	started := time.Now()
 	raw, e := fetch(ctx, client, endpoint, request)
+	now = now.Add(time.Since(started))
 	if e != nil {
 		return time.Time{}, e
 	}
@@ -330,7 +332,10 @@ func checkOCSP(ctx context.Context, client *http.Client, endpoint string, cert, 
 			return time.Time{}, ErrStatus
 		}
 	}
-	if response.ProducedAt.IsZero() || response.ProducedAt.Before(response.ThisUpdate) {
+	// Some responders (including Go x/crypto/ocsp) round ProducedAt to
+	// the minute while ThisUpdate retains seconds. Freshness still uses
+	// the original ThisUpdate and NextUpdate values.
+	if response.ProducedAt.IsZero() || response.ProducedAt.Before(response.ThisUpdate.Truncate(time.Minute)) {
 		return time.Time{}, ErrStatus
 	}
 	for _, extension := range tbs.Extensions {
