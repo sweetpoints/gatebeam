@@ -160,13 +160,21 @@ def stage():
             archive = Path(folder) / 'tested.tar'
             command('docker', 'image', 'save', '--output', str(archive), 'gatebeam-' + role + ':local')
             image = inspect_oci(archive, arch, expected_labels=image_labels(repository, version, sha))
-            digest, config = image['manifest_digest'], image['config_digest']
             # Docker's containerd and classic stores report different image identifiers.
-            if tested[role] not in (digest, config):
+            if tested[role] not in (image['manifest_digest'], image['config_digest']):
                 raise ValueError(f'exported {role} identity differs from the tested image')
+            # Classic Docker exports uncompressed layers. Encode them for the
+            # registry locally and require the tested config digest (including
+            # the uncompressed layer digests) to survive the copy.
+            compressed = Path(folder) / 'registry.tar'
+            source = f'oci-archive:{compressed}:tested'
+            command('skopeo', 'copy', '--format', 'oci', f'oci-archive:{archive}', source)
+            shipping = inspect_oci(compressed, arch, expected_labels=image_labels(repository, version, sha))
+            digest, config = shipping['manifest_digest'], shipping['config_digest']
+            if config != image['config_digest']:
+                raise ValueError(f'registry encoding changed the tested {role} image config')
             target = registry_repository(repository, role) + '@' + digest
-            command('skopeo', 'copy', '--preserve-digests', '--dest-authfile', authfile,
-                    f'oci-archive:{archive}', 'docker://' + target)
+            command('skopeo', 'copy', '--preserve-digests', '--dest-authfile', authfile, source, 'docker://' + target)
             remote = command('skopeo', 'inspect', '--raw', '--authfile', authfile, 'docker://' + target)
             if json.loads(remote)['config']['digest'] != config:
                 raise ValueError(f'GHCR returned a different {role} image config')
