@@ -3,6 +3,7 @@
 package multinode
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -79,6 +80,34 @@ func (l *Lab) startCA(t testing.TB, root string, cert, key []byte) {
 		"--mount", "type=bind,src="+root+",dst=/ca,readonly", "gatebeam-ca:local", "serve", "-config", "/ca/serve.json")
 	t.Cleanup(func() { CleanupDocker(t, "rm", "-fv", l.CAContainer) })
 	l.CAAddress = prepareDocker(t, "port", l.CAContainer, "8444/tcp")
+}
+
+func (l *Lab) RestartCA(t testing.TB) {
+	t.Helper()
+	Docker(t, "start", l.CAContainer)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(40 * time.Millisecond)
+	defer ticker.Stop()
+	client := l.Nodes[0].CAClient
+	for ctx.Err() == nil {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, caOrigin+"/acme/server/directory", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := client.Do(req)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return
+			}
+		}
+		select {
+		case <-ctx.Done():
+		case <-ticker.C:
+		}
+	}
+	t.Fatal("independent CA did not resume serving ACME after restart", Docker(t, "logs", "--tail", "8", l.CAContainer))
 }
 
 func (l *Lab) caFile(t testing.TB, name string, raw []byte) {
