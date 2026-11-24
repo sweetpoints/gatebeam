@@ -34,18 +34,18 @@ func TestActivationRefusesOneUnreadyRole(t *testing.T) {
 	client := &http.Client{Transport: activationTransport(func(r *http.Request) (*http.Response, error) {
 		calls++
 		state := lifecycle.Snapshot{Live: true, Mode: "serving", Ready: map[string]bool{lifecycle.Data: true, lifecycle.Management: true, lifecycle.GlobalJobs: true, lifecycle.LocalCleanup: true, lifecycle.Query: true, lifecycle.ACME: true, lifecycle.Status: true}, Details: map[string]string{"artifact_id": strings.Repeat("a", 64), "generation": "initial"}}
-		if !healthy && r.URL.Host == "10.42.0.31:19094" {
-			state.Ready[lifecycle.Status] = false
+		if !healthy && r.URL.Host == "10.42.0.31:19095" {
+			state.Ready[lifecycle.Query] = false
 		}
 		raw, _ := json.Marshal(state)
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(raw)))}, nil
 	})}
 	if _, e := activationProbes(context.Background(), pair, client); e == nil {
-		t.Fatal("one broken CA status capability allowed activation")
+		t.Fatal("one broken query capability allowed activation")
 	}
 	healthy = true
 	proof, e := activationProbes(context.Background(), pair, client)
-	if e != nil || len(proof) != 2 || calls < 10 {
+	if e != nil || len(proof) != 2 || calls < 8 {
 		t.Fatal("complete cohort not probed", len(proof), calls, e)
 	}
 }

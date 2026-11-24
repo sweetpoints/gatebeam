@@ -45,37 +45,6 @@ services:
             - background-jobs-control:/run/control
             - worker-capsules:/var/lib/gatebeam/capsules/worker
             - backup-spool:/var/lib/gatebeam/backups
-    internal-ca:
-        cap_drop:
-            - ALL
-        cpus: 1
-        image: ${GATEBEAM_CA_IMAGE:?Set GATEBEAM_CA_IMAGE in .env}
-        logging:
-            driver: json-file
-            options:
-                max-file: "1"
-                max-size: 1m
-        mem_limit: 256m
-        networks:
-            node-private:
-                ipv4_address: 172.31.0.6
-        pids_limit: 64
-        ports:
-            - ${NODE_PRIVATE_ADDRESS:?Set this VM private address}:${GATEBEAM_CA_HEALTH_PORT:?Set role health port}:9090
-            - ${NODE_PRIVATE_ADDRESS:?Set this VM private address}:8444:8444
-            - ${NODE_PRIVATE_ADDRESS:?Set this VM private address}:8081:8081
-        read_only: true
-        restart: on-failure:5
-        security_opt:
-            - no-new-privileges:true
-        stop_grace_period: 75s
-        tmpfs:
-            - /tmp:size=16m,mode=1777
-        user: 101:101
-        volumes:
-            - ${GATEBEAM_SECRET_ROOT:?Set node secret root}/ca:/run/gatebeam:ro
-            - internal-ca-control:/run/control
-            - ca-capsules:/var/lib/gatebeam/capsules/ca
     log-query:
         cap_drop:
             - ALL
@@ -139,6 +108,7 @@ services:
         volumes:
             - ${GATEBEAM_SECRET_ROOT:?Set node secret root}/api:/run/gatebeam:ro
             - management-control:/run/control
+            - management-acme:/var/lib/gatebeam/management-acme
             - api-capsules:/var/lib/gatebeam/capsules/api
     nginx:
         cap_drop:
@@ -171,10 +141,14 @@ services:
             - ${GATEBEAM_SECRET_ROOT:?Set node secret root}/edge:/run/gatebeam:ro
             - acme-challenges:/var/lib/gatebeam/acme
             - edge-runtime:/var/lib/gatebeam
+            - management-acme:/var/lib/gatebeam/management-acme:ro
             - edge-logs:/var/lib/gatebeam/logs
             - nginx-control:/run/control
             - edge-capsules:/var/lib/gatebeam/capsules/edge
 volumes:
+    management-acme:
+        external: true
+        name: ${NODE_STORAGE_PREFIX:?Set unique node storage prefix}-management-acme
     acme-challenges:
         external: true
         name: ${NODE_STORAGE_PREFIX:?Set unique node storage prefix}-acme-challenges
@@ -187,9 +161,6 @@ volumes:
     backup-spool:
         external: true
         name: ${NODE_STORAGE_PREFIX:?Set unique node storage prefix}-backup-spool
-    ca-capsules:
-        external: true
-        name: ${NODE_STORAGE_PREFIX:?Set unique node storage prefix}-ca-capsules
     edge-capsules:
         external: true
         name: ${NODE_STORAGE_PREFIX:?Set unique node storage prefix}-edge-capsules
@@ -199,9 +170,6 @@ volumes:
     edge-runtime:
         external: true
         name: ${NODE_STORAGE_PREFIX:?Set unique node storage prefix}-edge-runtime
-    internal-ca-control:
-        external: true
-        name: ${NODE_STORAGE_PREFIX:?Set unique node storage prefix}-internal-ca-control
     log-query-control:
         external: true
         name: ${NODE_STORAGE_PREFIX:?Set unique node storage prefix}-log-query-control

@@ -27,8 +27,9 @@ func TestBothNodesColdStartWithAllControlDependenciesStopped(t *testing.T) {
 		t.Fatal("owned database required")
 	}
 	for _, n := range lab.Nodes {
-		n.Compose(t, "stop", "--timeout", "2", "management", "background-jobs", "internal-ca", "log-query")
+		n.Compose(t, "stop", "--timeout", "2", "management", "background-jobs", "log-query")
 	}
+	fixture.Docker(t, "stop", "--time", "2", lab.CAContainer)
 	fixture.Docker(t, "network", "disconnect", lab.Network, db)
 	for _, n := range lab.Nodes {
 		before := n.Compose(t, "ps", "-q", "nginx")
@@ -43,8 +44,9 @@ func TestBothNodesColdStartWithAllControlDependenciesStopped(t *testing.T) {
 		}
 	}
 	fixture.Docker(t, "network", "connect", "--alias", "database", lab.Network, db)
+	fixture.Docker(t, "start", lab.CAContainer)
 	for _, n := range lab.Nodes {
-		n.Compose(t, "start", "management", "background-jobs", "internal-ca", "log-query")
+		n.Compose(t, "start", "management", "background-jobs", "log-query")
 		n.Wait(t, "management", "management")
 		if code := site.Get(t, n, "/"); code != 200 {
 			t.Fatal("reconcile interrupted business", code)

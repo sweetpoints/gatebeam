@@ -27,7 +27,7 @@ func BuildPlan(r Request, i Inventory) (Plan, error) {
 	}
 	r, i = snapshot.Request, snapshot.Inventory
 	p := Plan{Request: r, Inventory: i, ID: r.BatchID, ExecutorInstance: r.ExecutorInstance, Scope: r.Scope}
-	if !(domain.NodeRef{ID: r.BatchID, Epoch: 1}).Valid() || len(i.Nodes) != 2 || i.Schema != 27 || i.RoleSchema != 6 || !i.Compatible || !slices.Contains([]string{"node", "role", "host"}, r.Scope) {
+	if !(domain.NodeRef{ID: r.BatchID, Epoch: 1}).Valid() || len(i.Nodes) != 2 || !domain.CurrentRuntimeContract().SupportsVersions(i.Schema, i.RoleSchema) || !i.Compatible || !slices.Contains([]string{"node", "role", "host"}, r.Scope) {
 		return p, ErrInvalid
 	}
 	executor := strings.Split(r.ExecutorInstance, "/")

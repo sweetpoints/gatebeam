@@ -23,14 +23,15 @@ type Policy struct {
 	MaxAge time.Duration
 }
 type Manifest struct {
-	Version   int
-	ID        string
-	Created   time.Time
-	Snapshot  string
-	Epoch     string
-	Schema    string
-	Recipient string
-	Files     []File
+	ExternalCA bool `json:",omitempty"`
+	Version    int
+	ID         string
+	Created    time.Time
+	Snapshot   string
+	Epoch      string
+	Schema     string
+	Recipient  string
+	Files      []File
 }
 type File struct {
 	Name   string

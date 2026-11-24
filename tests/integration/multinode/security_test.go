@@ -4,16 +4,10 @@ package multinode_test
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	age "filippo.io/age"
 	fixture "gatebeam/tests/fixtures/multinode"
-	"math/big"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -23,7 +17,7 @@ func TestPrivateTLSRotationAndRevocationAcrossRestart(t *testing.T) {
 	l := fixture.Start(t)
 	b := l.Business(t)
 	a := l.Nodes[0]
-	apiID, caID := a.Compose(t, "ps", "-q", "management"), a.Compose(t, "ps", "-q", "internal-ca")
+	apiID, caID := a.Compose(t, "ps", "-q", "management"), fixture.Docker(t, "inspect", "--format", "{{.Id}}", l.CAContainer)
 	checkSerial := func(client *http.Client, url, serial string) {
 		t.Helper()
 		r, e := client.Get(url)
@@ -37,52 +31,44 @@ func TestPrivateTLSRotationAndRevocationAcrossRestart(t *testing.T) {
 	}
 	apiSerial := l.RenewRoleTLS(t, a, "management")
 	checkSerial(a.APIClient, "https://management-api.dual.test/auth/session", apiSerial)
-	caSerial := l.RenewRoleTLS(t, a, "internal-ca")
+	caSerial := l.RenewRoleTLS(t, a, "external-ca")
 	checkSerial(a.CAClient, "https://ca.dual.test:8444/acme/server/directory", caSerial)
-	if apiID != a.Compose(t, "ps", "-q", "management") || caID != a.Compose(t, "ps", "-q", "internal-ca") {
+	if apiID != a.Compose(t, "ps", "-q", "management") || caID != fixture.Docker(t, "inspect", "--format", "{{.Id}}", l.CAContainer) {
 		t.Fatal("certificate load restarted role")
 	}
-	// A valid fresh issuer CRL revokes the actual gateway leaf, not its login.
-	certPEM, e := os.ReadFile(filepath.Join(a.Secrets["nginx"], "api-client.pem"))
-	if e != nil {
-		t.Fatal(e)
+	// Revoke an actual gateway client in the independent CA's database.
+	l.EnableRoleRenewal(t, a, "nginx")
+	ready := time.Now().Add(25 * time.Second)
+	for a.Health(t, "nginx").Details["tls_renewal"] != "ready" {
+		if time.Now().After(ready) {
+			t.Fatal("gateway did not enroll with external CA")
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
-	block, _ := pem.Decode(certPEM)
-	leaf, e := x509.ParseCertificate(block.Bytes)
-	if e != nil {
-		t.Fatal(e)
+	leaf := l.UseRenewedClient(t, a)
+	if r, err := a.APIClient.Get("https://management-api.dual.test/auth/session"); err != nil {
+		t.Fatal("new gateway certificate was not admitted before revocation", err)
+	} else {
+		r.Body.Close()
 	}
-	old, e := os.ReadFile(filepath.Join(a.Secrets["management"], "api-client.crl"))
-	if e != nil {
-		t.Fatal(e)
-	}
-	rootList := []byte{}
-	rest := old
-	for len(rest) > 0 {
-		block, next := pem.Decode(rest)
-		if block == nil {
+	l.RevokeClient(t, leaf)
+	deadline := time.Now().Add(35 * time.Second)
+	for {
+		r, err := a.APIClient.Get("https://management-api.dual.test/auth/session")
+		if err != nil {
 			break
 		}
-		crl, _ := x509.ParseRevocationList(block.Bytes)
-		if crl != nil && crl.CheckSignatureFrom(l.TestIssuer.Certificate) != nil {
-			rootList = append(rootList, pem.EncodeToMemory(block)...)
-		}
-		rest = next
-	}
-	der, e := x509.CreateRevocationList(rand.Reader, &x509.RevocationList{Number: big.NewInt(2), ThisUpdate: time.Now().Add(-time.Second), NextUpdate: time.Now().Add(time.Hour), RevokedCertificateEntries: []x509.RevocationListEntry{{SerialNumber: leaf.SerialNumber, RevocationTime: time.Now().Add(-time.Second)}}}, l.TestIssuer.Certificate, l.TestIssuer.Signer)
-	if e != nil {
-		t.Fatal(e)
-	}
-	a.WriteRoleFiles(t, "management", map[string][]byte{"api-client.crl": append(pem.EncodeToMemory(&pem.Block{Type: "X509 CRL", Bytes: der}), rootList...)})
-	if r, e := a.APIClient.Get("https://management-api.dual.test/auth/session"); e == nil {
 		r.Body.Close()
-		t.Fatal("revoked gateway admitted by private API")
+		if time.Now().After(deadline) {
+			t.Fatal("revoked gateway admitted after CRL refresh")
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
 	if b.Get(t, a, "/") != 200 {
 		t.Fatal("private API status affected unrelated business")
 	}
 	// Restoring the old signed list does not erase the retained status minimum.
-	a.WriteRoleFiles(t, "management", map[string][]byte{"api-client.crl": old})
+	fixture.Docker(t, "stop", "--time", "2", l.CAContainer)
 	a.Compose(t, "rm", "-sf", "management")
 	a.Compose(t, "up", "-d", "--no-build", "--no-deps", "management")
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
@@ -92,6 +78,7 @@ func TestPrivateTLSRotationAndRevocationAcrossRestart(t *testing.T) {
 		r.Body.Close()
 		t.Fatal("old CRL revived revoked identity after role cold restart")
 	}
+	fixture.Docker(t, "start", l.CAContainer)
 	code, _ := l.Nodes[1].Request(t, "GET", "/sites/"+b.SiteID, nil, b.Session.Cookie, b.Session.CSRF)
 	if code != 200 {
 		t.Fatal("peer management failed", code)
@@ -151,28 +138,28 @@ func TestPrivateRolesObtainAndAutomaticallyLoadStandardACME(t *testing.T) {
 		r.Body.Close()
 		return r.TLS.PeerCertificates[0].SerialNumber.String()
 	}
-	oldAPI, oldCA := leafSerial(a.APIClient, "https://management-api.dual.test/auth/session"), leafSerial(a.CAClient, "https://ca.dual.test:8444/acme/server/directory")
-	for _, role := range []string{"management", "internal-ca", "nginx"} {
+	oldAPI := leafSerial(a.APIClient, "https://management-api.dual.test/auth/session")
+	for _, role := range []string{"management", "nginx"} {
 		l.EnableRoleRenewal(t, a, role)
 	}
 	deadline := time.Now().Add(25 * time.Second)
 	for {
 		ready := true
-		for _, role := range []string{"management", "internal-ca", "nginx"} {
+		for _, role := range []string{"management", "nginx"} {
 			ready = ready && a.Health(t, role).Details["tls_renewal"] == "ready"
 		}
 		if ready {
 			break
 		}
 		if time.Now().After(deadline) {
-			for _, role := range []string{"management", "internal-ca", "nginx"} {
+			for _, role := range []string{"management", "nginx"} {
 				t.Log(role, a.Health(t, role), a.Compose(t, "logs", "--tail", "6", role))
 			}
 			t.Fatal("standard private role issuance did not complete")
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	if leafSerial(a.APIClient, "https://management-api.dual.test/auth/session") == oldAPI || leafSerial(a.CAClient, "https://ca.dual.test:8444/acme/server/directory") == oldCA {
+	if leafSerial(a.APIClient, "https://management-api.dual.test/auth/session") == oldAPI {
 		t.Fatal("renewed certificate was not automatically loaded")
 	}
 	code, _ := a.Request(t, "GET", "/sites/"+business.SiteID, nil, business.Session.Cookie, business.Session.CSRF)
@@ -192,14 +179,27 @@ func TestPrivateRolesObtainAndAutomaticallyLoadStandardACME(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	var count int
-	if e := l.Pool.QueryRow(t.Context(), `SELECT count(*) FROM pki_certificates`).Scan(&count); e != nil || count < 4 {
-		t.Fatal("standard server/client orders did not issue", count, e)
+	b := l.Nodes[1]
+	l.EnableRoleRenewal(t, b, "nginx")
+	deadline = time.Now().Add(25 * time.Second)
+	for b.Health(t, "nginx").Details["tls_renewal"] != "ready" {
+		if time.Now().After(deadline) {
+			t.Fatal("second gateway did not load its independent ACME identity")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	issued := l.IssuedCertificateCount(t)
+	if issued < 4 {
+		t.Fatal("independent CA did not record the server/client issues", issued)
 	}
 	if business.Get(t, a, "/") != 200 {
 		t.Fatal("role renewal interrupted business")
 	}
-	t.Log("one initial MFA/EAB grant per role; unchanged standard ACME v2 client completed shared HTTP01 for API/CA and node-local HTTP01 for gateway client; own existing keys remained in owning role and new leaves auto-loaded without manual configuration publication")
+	t.Log("operator-issued EAB; standard ACME v2 used isolated management and node-local gateway HTTP-01 responses; both gateways loaded their own client credentials and the management API renewed automatically")
+	var gatewayOrders int
+	if err := l.Pool.QueryRow(t.Context(), "SELECT count(*) FROM pki_orders").Scan(&gatewayOrders); err != nil || gatewayOrders != 0 {
+		t.Fatalf("gateway database held CA orders: %d (%v)", gatewayOrders, err)
+	}
 }
 
 func TestCapsuleEnabledMaintenanceSurvivesEdgeControlRestart(t *testing.T) {

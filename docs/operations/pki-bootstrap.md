@@ -1,11 +1,33 @@
 # Private CA bootstrap
 
+For CA management and new CA provisioning, see the
+[CA module](../../gatebeam-ca/README.md).
+Gatebeam no longer exposes CA operator actions in its API or console. The
+gateway Compose deployment uses the CA image as a separately operated service.
+The embedded CA commands below describe the historical deployment. Its
+legacy certificate publication policy reads the local CA ledger.
+To validate publication and distribution against an independently deployed CA,
+set `certificate_status_trust_file` on both the management API and edge. The PEM
+contains the CA root and the issuing intermediates. Configure their pinned
+responder URLs, DNS resolvers, and allowed networks in
+`certificate_status_profiles_file`. Gatebeam verifies a fresh signed CRL and
+a Good OCSP response for each non-root certificate in the chain. The gateway
+does not connect to the CA database in this mode.
+
+For management API transport certificate renewal against a separate CA, set
+`private_tls_renewal.http01_webroot` to a dedicated writable absolute directory.
+Serve `/.well-known/acme-challenge/` from this directory on the private DNS
+hostname in the management certificate. Every management renewal client needs
+its own hostname and directory. Keep the business challenge webroot separate.
+This option uses the local HTTP-01 responder instead of the shared challenge
+table for management renewals.
+
 The private CA supplies an offline issuer ceremony, immutable public issuer
 storage, and standard ACME v2 account enrollment using EAB. Both directories
 support newNonce, newAccount, account POST-as-GET/update/deactivation and
 keyChange. Orders, authorizations, HTTP-01 challenges, finalization, account order lists
 and certificate retrieval are implemented. Revocation is available through standard
-ACME HTTPS and the authenticated management API. OCSP and CRLs are available on
+ACME HTTPS. CA operators administer the standalone CA using its CLI. OCSP and CRLs are available on
 the separate private HTTP status listener. There is no generic JSON CSR issuance API.
 
 ## Offline ceremony
@@ -54,8 +76,8 @@ processes. Restrict these files and the destination directory to the CA OS user.
 Provision a separate CA database login after applying all embedded migrations. As the
 migration owner, run the embedded `db/roles` goose migrations with
 `migrate_roles: true` and the deployment schema selected in `search_path`; grant schema USAGE and the `gatebeam_pki_ca` capability role to
-the CA login. Grant `gatebeam_pki_management` to the API login only when the
-management service is assembled. These roles contain no passwords. Do not use
+the CA login. The gateway API login has no CA enrollment or administrative
+revocation privileges. These roles contain no passwords. Do not use
 an owner/superuser login or grant broad table privileges to runtime processes.
 The CA startup checks read/append privileges and rejects mutable issuer or
 serial authority. The API capability can read public issuer metadata but cannot
@@ -136,36 +158,17 @@ It does not establish production readiness or Nginx/ACME interoperability.
 
 ## First explicit enrollment grant and one-time EAB
 
-API configuration must include `ca_recipient` (the public string in
-`recipient.txt`), `ca_server_names` and `ca_client_names`. Keep the configured
-name allowlists aligned with the CA; authorization never widens them. The API
-continues to use its own `identity_file` for administrator authentication.
-Neither `ca_identity_file` nor `ca_signer_file` is accepted by the API process.
+CA operators use the [CA module](../../gatebeam-ca/README.md)
+for enrollment authority. Use `gatebeam-ca authorize` and `gatebeam-ca issue-eab`
+to grant exact DNS names and create one-time EAB. Enter the KID and HMAC into
+the Gatebeam ACME client configuration for the matching server or client
+directory. The gateway's certificate and credential screens manage the local
+ACME client account and certificate lifecycle.
 
-A current interactive administrator with a fresh single-use TOTP proof creates
-`POST /pki/grants` with exact `names`, `purpose` (`serverAuth` or `clientAuth`),
-`directory` (`server` or `client`), `expires`, and `totp_code`. The directory
-selector maps only to the fixed standard URLs
-`<ca_origin>/acme/server/directory` and `<ca_origin>/acme/client/directory`.
-Each grant creates a separate PKI principal. No initial grant is created
-implicitly, and no management request accepts caller-supplied actor identity.
-
-A second fresh proof authorizes `POST /pki/grants/{id}/eab`. The committed
-response shows `kid` and base64url `hmac` once. Pass these to an unmodified
-standard ACME client's EAB options, using the matching directory URL. The
-credential expires after 15 minutes (or earlier at the principal expiry), and
-its HMAC is stored age-encrypted for the CA alone. A lost response cannot be
-retrieved: issuing a replacement atomically invalidates the previous unused
-credential. Neither API responses nor audits include encrypted signer material.
-
-The first successful newAccount consumes the EAB atomically with account
-binding. Subsequent newAccount lookup, POST-as-GET and key rollover use the
-registered account key and require no EAB, including after process restart or
-15-minute EAB expiry. Each operation checks the current principal's expiry and
-disabled status under the principal lock. `POST /pki/principals/{id}/disable`
-requires another fresh administrator proof and commits the authoritative state
-before reporting success. It blocks later enrollment/account operations and
-does not pretend to terminate existing TLS connections or revoke certificates.
+The first successful newAccount consumes EAB atomically. Subsequent
+account operations use the registered account key. Use `gatebeam-ca disable`
+to stop future authorized operations for a principal. Use `gatebeam-ca revoke`
+to revoke an already-issued certificate.
 
 The CA validates the protected URL against `ca_origin` and the exact request
 URI. Configure the real client-facing HTTPS origin explicitly; request Host or
@@ -187,7 +190,7 @@ These tests never register against a public or production CA. They cover account
 is run separately below. Apply the role SQL using the schema owner; runtime never grants itself
 additional privileges. The CA may read enrollment policy, consume bindings,
 maintain account keys/status and manage nonce rows, but cannot create or widen
-principals/grants/EAB. The API may manage enrollment authority but cannot
+principals/grants/EAB. The API cannot manage enrollment authority or
 write ACME account keys, issue certificates, or reserve issuer serials.
 
 ## HTTP-01 network policy and durable issuance
@@ -262,10 +265,8 @@ and root CRLDP into the intermediate certificate. Runtime rejects an intermediat
 whose AIA does not match this configured endpoint.
 CSR-provided URLs and extensions are not copied.
 
-Administrative revocation requires the current interactive administrator and a
-fresh TOTP through `POST /pki/issuers/{issuer}/certificates/{serial}/revoke`.
-Revocation and audit commit synchronously in one database transaction; an audit
-failure rolls back revocation. Disabling a principal prevents further issuance
+CA operators revoke certificates with the standalone `gatebeam-ca revoke` command.
+Revocation and its CA audit record commit in one database transaction. Disabling a principal prevents further issuance
 and is separate from revoking already issued leaves. ACME revocation permits the
 current issuing account, a current account with unexpired validated challenges
 for every certificate identifier, or a JWS signed by the certificate key. Account

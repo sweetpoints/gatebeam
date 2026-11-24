@@ -44,7 +44,7 @@ func TestNodeRenderUsesPeerVPCAndIndependentRecipients(t *testing.T) {
 	node.InstanceGroup = "projects/owned/zones/us-west1-c/instanceGroups/gatebeam-b"
 	node.PublicBackend = "projects/owned/regions/us-west1/backendServices/entry"
 	node.PrivateBackend = "projects/owned/regions/us-west1/backendServices/ca"
-	modes := map[string]string{"nginx": "edge", "management": "api", "background-jobs": "worker", "internal-ca": "ca", "log-query": "query"}
+	modes := map[string]string{"nginx": "edge", "management": "api", "background-jobs": "worker", "log-query": "query"}
 	for name, r := range node.Roles {
 		r.Image = "registry.example/gatebeam/" + name + "@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 		r.ConfigFile = filepath.Join(out, modes[name], modes[name]+".json")

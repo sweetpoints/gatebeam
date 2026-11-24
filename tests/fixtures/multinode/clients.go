@@ -44,7 +44,7 @@ func (n *Node) RefreshClients(t testing.TB, trust []byte) {
 	}
 	n.PublicClient = client("management.dual.test", n.Port(t, 443), nil)
 	n.APIClient = client("management-api.dual.test", n.Port(t, 9443), &pair)
-	n.CAClient = client("ca.dual.test", n.Port(t, 8444), nil)
+	n.CAClient = client("ca.dual.test", n.CAAddress, nil)
 }
 func (b *Business) RefreshClient(t testing.TB, n *Node) {
 	t.Helper()

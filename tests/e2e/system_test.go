@@ -53,7 +53,7 @@ func compositionFile(t *testing.T, name string) map[string]service {
 
 func TestProductionCompositionHasOnlyDefaultRuntimeServices(t *testing.T) {
 	services := composition(t)
-	required := map[string]bool{"nginx": true, "management": true, "background-jobs": true, "internal-ca": true, "log-query": true}
+	required := map[string]bool{"nginx": true, "management": true, "background-jobs": true, "log-query": true}
 	for name, s := range services {
 		if !required[name] {
 			t.Errorf("non-runtime service %s belongs outside production Compose", name)
@@ -84,7 +84,7 @@ func TestDevelopmentDatabaseIsSeparate(t *testing.T) {
 }
 func TestCompositionProcessCapabilities(t *testing.T) {
 	services := composition(t)
-	for _, name := range []string{"management", "background-jobs", "nginx", "internal-ca", "log-query"} {
+	for _, name := range []string{"management", "background-jobs", "nginx", "log-query"} {
 		s, ok := services[name]
 		if !ok {
 			t.Errorf("missing actual %s process", name)
@@ -114,7 +114,7 @@ func TestCompositionProcessCapabilities(t *testing.T) {
 	if _, ok := services["log-query"].Networks["node-private"]; ok {
 		t.Error("query executor can reach control database network")
 	}
-	for _, name := range []string{"nginx", "management", "background-jobs", "internal-ca", "log-query"} {
+	for _, name := range []string{"nginx", "management", "background-jobs", "log-query"} {
 		if !strings.Contains(services[name].Image, ":?") {
 			t.Errorf("%s image is mutable", name)
 		}

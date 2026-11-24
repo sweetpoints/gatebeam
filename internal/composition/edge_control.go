@@ -148,14 +148,18 @@ func runEdgeControlMode(ctx context.Context, cfg bootstrap.Config, node domain.N
 		}
 	}
 	previewPhase = "status-profile"
-	materials.SetLeafStatus(certificatematerials.LeafStatus{Owner: pki.NewMaterialStatus()})
+	if cfg.CertificateStatusTrustFile == "" {
+		materials.SetLeafStatus(certificatematerials.LeafStatus{Owner: pki.NewMaterialStatus()})
+	} else if e = certificates.ConfigureStandardLeafStatus(materials, cfg.CertificateStatusProfilesFile, cfg.CertificateStatusTrustFile); e != nil {
+		return e
+	}
 	if e = certificates.ConfigureStatus(materials, cfg.CertificateStatusProfilesFile); e != nil {
 		return e
 	}
 	coordinator := publication.New(postgres.NewRunner(pool), access, sites, certificatematerials.Adapter{Owner: materials, Offline: offline}, deployment.New(), store, audit.New(), identifiers.Generator{})
 	coordinator.SetNodes(deployment.NewNodes())
 	bindings := deploymentpg.NewRuntime(pool, store, protected)
-	source := &runtimebootstrap.Source{ACMEWebRoot: cfg.ACMEWebRoot, Bindings: bindings, Materials: certificatematerials.Adapter{Owner: materials, Offline: offline}, Cloudflare: bindings, Domain: cfg.ManagementDomain, CertificateFile: cfg.ManagementCertificateFile, KeyFile: cfg.ManagementKeyFile, TrustFile: cfg.ManagementTrustFile, APIAddress: api, LogDirectory: filepath.Join(cfg.EdgeRoot, "logs"), ProtectedNetworks: protected}
+	source := &runtimebootstrap.Source{ACMEWebRoot: cfg.ACMEWebRoot, ManagementACMEWebRoot: cfg.ManagementACMEWebRoot, ManagementACMEHost: cfg.ManagementAPIName, Bindings: bindings, Materials: certificatematerials.Adapter{Owner: materials, Offline: offline}, Cloudflare: bindings, Domain: cfg.ManagementDomain, CertificateFile: cfg.ManagementCertificateFile, KeyFile: cfg.ManagementKeyFile, TrustFile: cfg.ManagementTrustFile, APIAddress: api, LogDirectory: filepath.Join(cfg.EdgeRoot, "logs"), ProtectedNetworks: protected}
 	if cfg.ManagementAPIPeerAddress != "" {
 		source.PeerAPIAddress, e = netip.ParseAddrPort(cfg.ManagementAPIPeerAddress)
 		if e != nil || !source.PeerAPIAddress.Addr().IsPrivate() || source.PeerAPIAddress.Port() == 0 {

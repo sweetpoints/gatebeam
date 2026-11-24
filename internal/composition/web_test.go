@@ -13,7 +13,7 @@ func TestWebRoutesAndAssetBoundary(t *testing.T) {
 	bundle := fstest.MapFS{"index.html": {Data: []byte("<!doctype html><title>Gatebeam</title>")}, "assets/app.js": {Data: []byte("export{}")}}
 	api := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(418) })
 	handler := withWeb(api, bundle)
-	for _, path := range []string{"/", "/login", "/enroll", "/recover", "/console/sites", "/console/targets", "/console/releases", "/console/certificates", "/console/credentials", "/console/identities", "/console/overview", "/console/logs", "/console/alerts", "/console/backups", "/console/accounts", "/console/audit"} {
+	for _, path := range []string{"/", "/login", "/enroll", "/recover", "/console/sites", "/console/targets", "/console/releases", "/console/certificates", "/console/credentials", "/console/overview", "/console/logs", "/console/alerts", "/console/backups", "/console/accounts", "/console/audit"} {
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
 		if w.Code != 200 || !strings.Contains(w.Body.String(), "Gatebeam") {
@@ -23,7 +23,7 @@ func TestWebRoutesAndAssetBoundary(t *testing.T) {
 			t.Fatal("HTML cache boundary")
 		}
 	}
-	for _, path := range []string{"/auth/session", "/accounts", "/unknown", "/sites", "/targets", "/releases", "/console/unknown", "/console/sites/unknown", "/secrets/identity", "/assets/../index.html", "/assets/missing.js"} {
+	for _, path := range []string{"/auth/session", "/accounts", "/unknown", "/sites", "/targets", "/releases", "/console/unknown", "/console/identities", "/console/sites/unknown", "/secrets/identity", "/assets/../index.html", "/assets/missing.js"} {
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
 		if w.Code == 200 {

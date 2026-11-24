@@ -4,6 +4,7 @@
 !.work/build
 !.work/build/gatebeam
 !.work/build/gatebeam-admin
+!.work/build/gatebeam-ca
 !web
 !deploy
 !deploy/edge

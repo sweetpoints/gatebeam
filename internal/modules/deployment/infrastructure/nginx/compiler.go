@@ -375,6 +375,16 @@ func (Compiler) Compile(s app.Snapshot, r edge.RuntimeState) (edge.Artifact, err
 		}
 		challengeLocation = fmt.Sprintf("location ^~ /.well-known/acme-challenge/ { root %s; default_type text/plain; limit_except GET { deny all; } try_files $uri =404; }\n", r.ACMEWebRoot)
 	}
+	if r.ManagementACMEWebRoot != "" {
+		if !regexp.MustCompile(`^/[a-zA-Z0-9/_-]+$`).MatchString(r.ManagementACMEWebRoot) ||
+			strings.Contains(r.ManagementACMEWebRoot, "//") || !regexp.MustCompile(`^[a-z0-9-]+(\.[a-z0-9-]+)+$`).MatchString(r.ManagementACMEHost) {
+			return edge.Artifact{}, ErrInvalid
+		}
+		if names[r.ManagementACMEHost] {
+			return edge.Artifact{}, ErrInvalid
+		}
+		fmt.Fprintf(w, "server { listen 8080; server_name %s; location ^~ /.well-known/acme-challenge/ { root %s; default_type text/plain; limit_except GET { deny all; } try_files $uri =404; } location / { return 404; } }\n", r.ManagementACMEHost, r.ManagementACMEWebRoot)
+	}
 	fmt.Fprintf(w, "server { listen 8080 default_server; server_name _; %s location / { return 444; } }\nserver { listen 8443 ssl default_server; ssl_reject_handshake on; return 444; }\n", challengeLocation)
 	fmt.Fprintf(w, "server { listen 127.0.0.1:9090; server_name _; access_log off; location = /version { default_type text/plain; return 200 '%s/%s'; } location / { return 404; } }\n", s.Version, r.Generation)
 	for _, site := range sites {

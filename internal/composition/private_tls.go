@@ -174,8 +174,12 @@ func renewPrivateTLS(ctx context.Context, c bootstrap.Config, p *pgxpool.Pool) (
 	request, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	var challenge certificates.PrivateHTTPChallenges
-	if c.Mode == "edge" {
-		challenge, e = certificates.NewPrivateLocalHTTPChallenges(request, c.ACMEWebRoot)
+	if c.Mode == "edge" || policy.HTTP01WebRoot != "" {
+		root := c.ACMEWebRoot
+		if policy.HTTP01WebRoot != "" {
+			root = policy.HTTP01WebRoot
+		}
+		challenge, e = certificates.NewPrivateLocalHTTPChallenges(request, root)
 		if e != nil {
 			return e
 		}

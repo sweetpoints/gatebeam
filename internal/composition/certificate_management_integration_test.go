@@ -131,13 +131,25 @@ func TestCertificateHTTPCurrentScopeMetadataAndSensitiveWrites(t *testing.T) {
 			t.Fatal("metadata boundary")
 		}
 	}
+	for _, endpoint := range []struct{ method, path string }{
+		{"GET", "/pki/management"},
+		{"POST", "/pki/grants"},
+		{"POST", "/pki/grants/fixture/eab"},
+		{"POST", "/pki/principals/fixture/disable"},
+		{"POST", "/pki/issuers/fixture/certificates/fixture/revoke"},
+	} {
+		w := request(endpoint.method, endpoint.path, nil, "")
+		if w.Code != 404 {
+			t.Fatalf("removed CA endpoint %s %s returned %d", endpoint.method, endpoint.path, w.Code)
+		}
+	}
 	// A site-limited admin-owned token cannot gain global PKI/unreferenced access.
 	tokenID, _ := ids.NewID()
 	token, _ := ids.Random()
 	if _, e = p.Exec(ctx, `INSERT INTO identity_tokens(id,account_id,digest,auth_version,actions,site_ids,expires) VALUES($1,$2,$3,1,ARRAY['view'],$4,now()+interval '1 hour')`, tokenID, uid, ids.Digest(token), []string{sites[0]}); e != nil {
 		t.Fatal(e)
 	}
-	for _, path := range []string{"/pki/management", "/certificates/spec/" + spec["id"].(string), "/certificates/credential/" + cred["id"].(string), "/certificates/credential/" + unreferenced["id"].(string)} {
+	for _, path := range []string{"/certificates/spec/" + spec["id"].(string), "/certificates/credential/" + cred["id"].(string), "/certificates/credential/" + unreferenced["id"].(string)} {
 		w := request("GET", path, nil, token)
 		if w.Code != 403 {
 			t.Fatal("site token read escaped scope", path, w.Code, w.Body.String())

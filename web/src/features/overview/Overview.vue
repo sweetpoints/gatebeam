@@ -3,7 +3,7 @@ import {onMounted,ref} from 'vue';import {request} from '../../api/client';impor
 type RuntimeStatus={mode:string;live:boolean;ready:Record<string,boolean>;nodes?:Array<{node:string;roles:Array<{role:string;available:boolean;status?:{mode:string;ready:Record<string,boolean>}}>}>};
 const runtime=ref<RuntimeStatus>(),runtimeUnavailable=ref(false);
 const modeNames:Record<string,string>={serving:'运行中',maintenance:'维护中',draining:'正在排空',stopped:'已停止',legacy:'兼容模式'};
-const roleNames:Record<string,string>={nginx:'网关入口',management:'管理服务','background-jobs':'后台任务','internal-ca':'内部 CA','log-query':'历史日志查询'};
+const roleNames:Record<string,string>={nginx:'网关入口',management:'管理服务','background-jobs':'后台任务','log-query':'历史日志查询'};
 const capabilityNames:Record<string,string>={data:'数据入口',management:'管理服务',acme:'证书签发',status:'证书状态',query:'历史查询','global-jobs':'后台任务','local-cleanup':'本地收尾'};
 const sites=ref<Site[]>([]),selected=ref<string[]>([]),from=ref(new Date(Date.now()-3600000).toISOString().slice(0,16)),to=ref(new Date().toISOString().slice(0,16)),result=ref<any>(),error=ref(''),busy=ref(false);
 async function load(){busy.value=true;result.value=undefined;error.value='';try{result.value=await request('/statistics/query',{SiteIDs:selected.value,From:new Date(from.value+'Z').toISOString(),To:new Date(to.value+'Z').toISOString()})}catch(e){error.value=message(e)}finally{busy.value=false}}

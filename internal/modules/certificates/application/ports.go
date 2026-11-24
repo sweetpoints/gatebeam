@@ -143,7 +143,7 @@ type ChallengeJournal interface {
 	Pending(context.Context) ([]PendingChallenge, error)
 }
 
-// LeafStatus validates current owning PKI state; its lock lasts through Scope.
+// LeafStatus validates the current revocation status of certificate material.
 type LeafStatus interface {
-	ValidateLeafWithin(transaction.Scope, Version, bool) error
+	ValidateLeafWithin(transaction.Scope, StoredVersion, bool) error
 }

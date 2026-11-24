@@ -20,7 +20,7 @@ func ValidateCapacity(p Plan) error {
 		}
 	}
 	for _, trial := range c.Trials {
-		if !trial.Node.Valid() || trial.DurationSeconds < 10 || trial.DurationSeconds > 86400 || trial.Requests < 1 || trial.Errors != 0 || float64(trial.Requests)/float64(trial.DurationSeconds) < c.RequiredPeakRPS || trial.P95Millis < 0 || math.IsNaN(trial.P95Millis) || math.IsInf(trial.P95Millis, 0) || trial.Workload == "" || len(trial.Workload) > 2048 || len(trial.Limits) != 5 {
+		if !trial.Node.Valid() || trial.DurationSeconds < 10 || trial.DurationSeconds > 86400 || trial.Requests < 1 || trial.Errors != 0 || float64(trial.Requests)/float64(trial.DurationSeconds) < c.RequiredPeakRPS || trial.P95Millis < 0 || math.IsNaN(trial.P95Millis) || math.IsInf(trial.P95Millis, 0) || trial.Workload == "" || len(trial.Workload) > 2048 || len(trial.Limits) != len(domain.NodeRoleNames()) {
 			return ErrCapacity
 		}
 		known := false

@@ -1,0 +1,20 @@
+[Unit]
+Description=Gatebeam private certificate authority
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=gatebeam-ca
+Group=gatebeam-ca
+ExecStart=/usr/local/bin/gatebeam-ca serve -config /etc/gatebeam-ca/serve.json
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -31,5 +31,8 @@
   "certificate_recipient": "age1_REPLACE_WITH_THIS_NODE_LEAF_PUBLIC_RECIPIENT",
   "log_rotate_bytes": 67108864,
   "log_max_bytes": 1073741824,
-  "log_max_files": 2048
+  "log_max_files": 2048,
+  "certificate_status_profiles_file": "/run/gatebeam/ca-status-profiles.json",
+  "certificate_status_trust_file": "/run/gatebeam/ca-status-trust.pem",
+  "management_acme_webroot": "/var/lib/gatebeam/management-acme"
 }

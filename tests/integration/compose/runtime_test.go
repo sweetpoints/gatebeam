@@ -77,7 +77,7 @@ func TestBootstrapCreatesConfirmedMinimalBundle(t *testing.T) {
 	services["postgres"] = map[string]any{"image": "postgres:18.6@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4", "environment": map[string]any{"POSTGRES_DB": "gatebeam", "POSTGRES_USER": "gatebeam", "POSTGRES_PASSWORD_FILE": "/run/secrets/postgres-password"}, "networks": map[string]any{"node-private": map[string]any{"ipv4_address": "172.31.0.4"}}, "mem_limit": "768m", "pids_limit": 128}
 	cfg["volumes"].(map[string]any)["edge-postgres"] = nil
 
-	serviceByRole := map[string]string{"edge": "nginx", "api": "management", "worker": "background-jobs", "ca": "internal-ca", "query-worker": "log-query", "postgres": "postgres"}
+	serviceByRole := map[string]string{"edge": "nginx", "api": "management", "worker": "background-jobs", "query-worker": "log-query", "postgres": "postgres"}
 	roleByService := map[string]string{}
 	for role, service := range serviceByRole {
 		roleByService[service] = role
@@ -166,7 +166,7 @@ func TestBootstrapCreatesConfirmedMinimalBundle(t *testing.T) {
 		}
 	}
 	dirs := map[string]string{}
-	for _, service := range []string{"postgres", "api", "edge", "worker", "ca", "query-worker"} {
+	for _, service := range []string{"postgres", "api", "edge", "worker", "query-worker"} {
 		dir := filepath.Join(root, service)
 		if e := os.Mkdir(dir, 0700); e != nil {
 			t.Fatal(e)
@@ -174,7 +174,7 @@ func TestBootstrapCreatesConfirmedMinimalBundle(t *testing.T) {
 		dirs[service] = dir
 	}
 	write(dirs["postgres"], "postgres-password", []byte("owned-compose-password"))
-	compose("create", "--no-build", "postgres", "nginx", "management", "background-jobs", "internal-ca", "log-query")
+	compose("create", "--no-build", "postgres", "nginx", "management", "background-jobs", "log-query")
 	seed := func(service string) {
 		t.Helper()
 		logical := name + "-" + service + "-secret"
@@ -206,7 +206,7 @@ func TestBootstrapCreatesConfirmedMinimalBundle(t *testing.T) {
 	db := testkit.Postgres(t)
 	roles := rolefixture.RuntimeRoles(t, db)
 	schema := db.Config().ConnConfig.RuntimeParams["search_path"]
-	for _, service := range []string{"api", "edge", "worker", "ca"} {
+	for _, service := range []string{"api", "edge", "worker"} {
 		dsn := &url.URL{Scheme: "postgres", User: url.UserPassword(roles[service].Name, roles[service].Password), Host: "172.31.0.4:5432", Path: "gatebeam"}
 		q := url.Values{"sslmode": {"disable"}, "search_path": {schema}}
 		dsn.RawQuery = q.Encode()
@@ -278,28 +278,17 @@ func TestBootstrapCreatesConfirmedMinimalBundle(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	for _, file := range []string{"issuer.pem", "issuer.age", "root.pem", "identity.agekey", "root-ocsp.pem", "root-ocsp.age", "root.crl.der"} {
-		b, e := os.ReadFile(filepath.Join(online, file))
-		if e != nil {
-			t.Fatal(e)
-		}
-		write(dirs["ca"], file, b)
-	}
-	caCert, caKey := pair("ca.test")
-	write(dirs["ca"], "transport.pem", caCert)
-	write(dirs["ca"], "transport.key", caKey)
 	configs := map[string]bootstrap.Config{
 		"edge":         {Environment: "production", Mode: "edge", DatabaseFile: "/run/gatebeam/database", CertificateIdentityFile: "/run/gatebeam/leaf.agekey", CertificateProviderRecipient: provider.Recipient(), EdgeRoot: "/var/lib/gatebeam", ManagementDomain: "management.test", ManagementAPIAddress: "172.31.0.3:8080", ManagementCertificateFile: "/run/gatebeam/management.pem", ManagementKeyFile: "/run/gatebeam/management.key", ManagementTrustFile: "/run/gatebeam/roots.pem", ProtectedNetworks: []string{"172.31.0.0/29", "172.31.0.0/29"}, ACMEWebRoot: "/var/lib/gatebeam/acme"},
 		"api":          {Environment: "production", Mode: "api", DatabaseFile: "/run/gatebeam/database", IdentityFile: "/run/gatebeam/identity.agekey", APIListen: "172.31.0.3:8080", APIPrivateNetwork: "172.31.0.0/29", APIOrigin: "https://management.test", ManagementDomain: "management.test", ManagementAddress: "172.31.0.2:8443", ManagementCertificateFile: "/run/gatebeam/management.pem", ManagementTrustFile: "/run/gatebeam/roots.pem"},
 		"worker":       {Environment: "production", Mode: "worker", DatabaseFile: "/run/gatebeam/database", ManagementAPIAddress: "172.31.0.3:8080", CertificateProviderIdentityFile: "/run/gatebeam/provider.agekey", CertificateRecipient: leaf.Recipient(), ACMEWebRoot: "/var/lib/gatebeam/acme", LogDirectory: "/var/lib/gatebeam/logs", LogSpoolDirectory: "/var/lib/gatebeam/spool", QuerySocket: "/run/query/query.sock"},
 		"query-worker": {Environment: "production", Mode: "query", QueryCredentialsFile: "/run/gatebeam/objectstore.json", QuerySocket: "/run/query/query.sock", QueryLocalDirectory: "/var/lib/gatebeam/spool"},
-		"ca":           {Environment: "production", Mode: "ca", DatabaseFile: "/run/gatebeam/database", CAIdentityFile: "/run/gatebeam/identity.agekey", CASignerFile: "/run/gatebeam/issuer.age", CACertificateFile: "/run/gatebeam/issuer.pem", CARootFile: "/run/gatebeam/root.pem", CARootCRLFile: "/run/gatebeam/root.crl.der", CARootOCSPCertificateFile: "/run/gatebeam/root-ocsp.pem", CARootOCSPSignerFile: "/run/gatebeam/root-ocsp.age", CAListen: "172.31.0.6:8444", CAHostname: "ca.test", CAOrigin: "https://ca.test:8444", CATLSCertificateFile: "/run/gatebeam/transport.pem", CATLSKeyFile: "/run/gatebeam/transport.key", CAStatusOrigin: "http://ca.test:8081", CAStatusListen: "172.31.0.6:8081", CAValidationNetworks: []string{"172.31.0.0/29"}, CAServerNames: []string{"owned.test"}, CAClientNames: []string{"owned.test"}},
 	}
 	node := deploydomain.NodeRef{ID: "11111111-1111-4111-8111-111111111111", Epoch: 1}
 	image := "sha256:" + strings.Repeat("a", 64)
 	images := map[string]string{}
 	protocols := map[string]uint32{}
-	for _, name := range []string{"nginx", "management", "background-jobs", "internal-ca", "log-query"} {
+	for _, name := range []string{"nginx", "management", "background-jobs", "log-query"} {
 		images[name] = image
 		protocols[name] = 1
 	}
@@ -344,7 +333,7 @@ func TestBootstrapCreatesConfirmedMinimalBundle(t *testing.T) {
 		t.Fatal(e)
 	}
 	rolePolicy := secrets.RolePolicy{}
-	for key, ref := range map[string][2]string{"api": {"api", "identity.agekey"}, "ca": {"ca", "identity.agekey"}, "provider": {"worker", "provider.agekey"}, "notification": {"worker", "notification.agekey"}, "leaf": {"edge", "leaf.agekey"}} {
+	for key, ref := range map[string][2]string{"api": {"api", "identity.agekey"}, "provider": {"worker", "provider.agekey"}, "notification": {"worker", "notification.agekey"}, "leaf": {"edge", "leaf.agekey"}} {
 		identity, e := secrets.New(filepath.Join(dirs[ref[0]], ref[1]))
 		if e != nil {
 			t.Fatal(e)
@@ -364,7 +353,7 @@ func TestBootstrapCreatesConfirmedMinimalBundle(t *testing.T) {
 		config.NodeID = node.ID
 		config.NodeEpoch = node.Epoch
 		config.ImageDigest = image
-		addresses := map[string]string{"edge": "172.31.0.2", "api": "172.31.0.3", "worker": "172.31.0.5", "ca": "172.31.0.6", "query-worker": "172.29.0.2"}
+		addresses := map[string]string{"edge": "172.31.0.2", "api": "172.31.0.3", "worker": "172.31.0.5", "query-worker": "172.29.0.2"}
 		config.HealthListen = addresses[service] + ":9090"
 		config.ControlSocket = "/run/control/control.sock"
 		config.DrainSeconds = 2
@@ -376,7 +365,7 @@ func TestBootstrapCreatesConfirmedMinimalBundle(t *testing.T) {
 		write(dirs[service], file, b)
 		seed(service)
 	}
-	for _, service := range []string{"nginx", "management", "background-jobs", "internal-ca", "log-query", "api-capsules"} {
+	for _, service := range []string{"nginx", "management", "background-jobs", "log-query", "api-capsules"} {
 		volume := name + "_" + service + "-control"
 		if service == "api-capsules" {
 			volume = name + "_api-capsules"
@@ -454,12 +443,12 @@ func TestBootstrapCreatesConfirmedMinimalBundle(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	compose("start", "management", "background-jobs", "internal-ca", "log-query")
+	compose("start", "management", "background-jobs", "log-query")
 	t.Cleanup(func() {
 		if t.Failed() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			b, _ := exec.CommandContext(ctx, "docker", "compose", "-p", name, "-f", path, "logs", "--no-color", "--tail", "10", "management", "background-jobs", "nginx", "internal-ca", "log-query").CombinedOutput()
+			b, _ := exec.CommandContext(ctx, "docker", "compose", "-p", name, "-f", path, "logs", "--no-color", "--tail", "10", "management", "background-jobs", "nginx", "log-query").CombinedOutput()
 			t.Log(string(b))
 		}
 	})
@@ -480,7 +469,7 @@ func TestBootstrapCreatesConfirmedMinimalBundle(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	for _, service := range []string{"api", "edge", "worker", "ca", "query-worker"} {
+	for _, service := range []string{"api", "edge", "worker", "query-worker"} {
 		id := compose("ps", "-q", serviceByRole[service])
 		if id == "" {
 			t.Fatal("required Compose process absent", service)
@@ -496,20 +485,14 @@ func TestBootstrapCreatesConfirmedMinimalBundle(t *testing.T) {
 			denied = append(denied, "/run/gatebeam/issuer.age", "/run/gatebeam/provider.agekey", "/run/query/query.sock")
 		case "worker":
 			denied = append(denied, "/run/gatebeam/issuer.age", "/run/gatebeam/leaf.agekey")
-		case "ca":
-			denied = append(denied, "/run/gatebeam/leaf.agekey", "/run/gatebeam/provider.agekey", "/run/query/query.sock")
 		case "query-worker":
 			denied = append(denied, "/run/gatebeam/database", "/run/gatebeam/issuer.age", "tcp:172.31.0.4:5432")
 		}
 		args := append([]string{"exec", "-e", "GATEBEAM_CAPABILITY_PROBE=1", id, "/capabilities"}, denied...)
 		docker(t, args...)
 	}
-	compose("restart", "--timeout", "2", "internal-ca")
-	time.Sleep(300 * time.Millisecond)
-	if state := docker(t, "inspect", "--format", "{{.State.Running}}", compose("ps", "-q", "internal-ca")); state != "true" {
-		t.Fatal("actual CA restart with persisted encrypted delegate failed")
-	}
-	t.Log("actual maintained Compose topology: all five gateway processes plus a disposable fixture DB, API serves built bundle through native management TLS, runtime roles and negative key/socket/network capabilities, persisted CA restart verified")
+	t.Log("actual maintained Compose topology: four gateway processes, native management TLS and restricted role capabilities")
+
 }
 
 func TestNegativeCapabilityProbeRejectsPresentUnixSocket(t *testing.T) {

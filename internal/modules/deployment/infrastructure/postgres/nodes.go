@@ -207,7 +207,7 @@ func (*Store) ActivateNodes(sc transaction.Scope, refs []domain.NodeRef) error {
 			if err = json.Unmarshal(row.Registration, &registration); err != nil {
 				return err
 			}
-			if registration.RuntimeProtocol != 1 || registration.BootFormat != 1 || registration.BootArtifactID == "" || len(registration.RoleProtocols) != 5 {
+			if registration.RuntimeProtocol != 1 || registration.BootFormat != 1 || registration.BootArtifactID == "" || len(registration.RoleProtocols) != len(domain.NodeRoleNames()) {
 				return domain.ErrUnavailable
 			}
 			for _, protocol := range registration.RoleProtocols {

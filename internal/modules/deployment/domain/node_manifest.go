@@ -42,7 +42,7 @@ func operatorFile(s string) bool {
 	return operatorPath.MatchString(s) && path.Clean(s) == s && s != "/" && !strings.ContainsAny(s, "\x00\r\n\t ")
 }
 func NodeRoleNames() []string {
-	return []string{"nginx", "management", "background-jobs", "internal-ca", "log-query"}
+	return []string{"nginx", "management", "background-jobs", "log-query"}
 }
 func (n NodeDeployment) Validate() error {
 	if n.CanaryFile != "" && !operatorFile(n.CanaryFile) {
@@ -50,7 +50,7 @@ func (n NodeDeployment) Validate() error {
 	}
 	own, e := netip.ParseAddr(n.PrivateAddress)
 	peer, pe := netip.ParseAddr(n.PeerAddress)
-	if !n.Node.Valid() || e != nil || pe != nil || !own.IsPrivate() || !peer.IsPrivate() || own == peer || !instanceRef.MatchString(n.Instance) || !groupRef.MatchString(n.InstanceGroup) || !backendRef.MatchString(n.PublicBackend) || !backendRef.MatchString(n.PrivateBackend) || !operatorFile(n.ComposeFile) || !operatorFile(n.EnvironmentFile) || !storageName.MatchString(n.StoragePrefix) || len(n.Roles) != 5 {
+	if !n.Node.Valid() || e != nil || pe != nil || !own.IsPrivate() || !peer.IsPrivate() || own == peer || !instanceRef.MatchString(n.Instance) || !groupRef.MatchString(n.InstanceGroup) || !backendRef.MatchString(n.PublicBackend) || !backendRef.MatchString(n.PrivateBackend) || !operatorFile(n.ComposeFile) || !operatorFile(n.EnvironmentFile) || !storageName.MatchString(n.StoragePrefix) || len(n.Roles) != len(NodeRoleNames()) {
 		return ErrInvalid
 	}
 	ports := map[int]bool{}

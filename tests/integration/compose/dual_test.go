@@ -3,17 +3,12 @@
 package compose_test
 
 import (
-	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"gatebeam/internal/modules/identity/infrastructure/credential"
 	"gatebeam/internal/platform/secrets"
 	labfixture "gatebeam/tests/fixtures/multinode"
 	"github.com/google/uuid"
 	"github.com/pquerna/otp/totp"
-	"net"
-	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -118,20 +113,13 @@ func TestTwoProjectsShareExternalPostgresAndPeerTLS(t *testing.T) {
 			t.Fatal("peer cached a revoked session", code)
 		}
 	}
-	a.Compose(t, "stop", "--timeout", "2", "internal-ca")
-	roots := x509.NewCertPool()
-	roots.AppendCertsFromPEM(lab.Trust)
-	address := b.Port(t, 8444)
-	client := &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, ServerName: "ca.dual.test", MinVersion: tls.VersionTLS12}, DialContext: func(ctx context.Context, network, ignored string) (net.Conn, error) {
-		return (&net.Dialer{}).DialContext(ctx, network, address)
-	}}}
-	r, e := client.Get("https://ca.dual.test:8444/acme/server/directory")
+	r, e := b.CAClient.Get("https://ca.dual.test:8444/acme/server/directory")
 	if e != nil {
 		t.Fatal(e)
 	}
 	r.Body.Close()
 	if r.StatusCode != 200 {
-		t.Fatal("B CA lost its stable issuer after A stopped", r.StatusCode)
+		t.Fatal("independent CA lost its stable issuer after A stopped", r.StatusCode)
 	}
 	for _, n := range lab.Nodes {
 		id := n.Compose(t, "ps", "-q", "log-query")
@@ -140,5 +128,5 @@ func TestTwoProjectsShareExternalPostgresAndPeerTLS(t *testing.T) {
 			t.Fatal("mutable query image")
 		}
 	}
-	t.Log("two isolated five-role Compose projects, independent role identities, external PostgreSQL, peer API TLS, shared/revoked session, scoped local queries and surviving CA verified")
+	t.Log("two isolated four-role Compose projects, independent role identities, external PostgreSQL, peer API TLS, shared/revoked session, scoped local queries and surviving CA verified")
 }

@@ -12,7 +12,7 @@ import (
 func withWeb(api http.Handler, bundle fs.FS) http.Handler {
 	assets := http.FileServer(http.FS(bundle))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		shell := r.URL.Path == "/" || r.URL.Path == "/login" || r.URL.Path == "/enroll" || r.URL.Path == "/recover" || r.URL.Path == "/console/sites" || r.URL.Path == "/console/targets" || r.URL.Path == "/console/releases" || r.URL.Path == "/console/certificates" || r.URL.Path == "/console/credentials" || r.URL.Path == "/console/identities" || r.URL.Path == "/console/overview" || r.URL.Path == "/console/logs" || r.URL.Path == "/console/alerts" || r.URL.Path == "/console/backups" || r.URL.Path == "/console/accounts" || r.URL.Path == "/console/audit"
+		shell := r.URL.Path == "/" || r.URL.Path == "/login" || r.URL.Path == "/enroll" || r.URL.Path == "/recover" || r.URL.Path == "/console/sites" || r.URL.Path == "/console/targets" || r.URL.Path == "/console/releases" || r.URL.Path == "/console/certificates" || r.URL.Path == "/console/credentials" || r.URL.Path == "/console/overview" || r.URL.Path == "/console/logs" || r.URL.Path == "/console/alerts" || r.URL.Path == "/console/backups" || r.URL.Path == "/console/accounts" || r.URL.Path == "/console/audit"
 		asset := strings.HasPrefix(r.URL.Path, "/assets/")
 		if !shell && !asset {
 			api.ServeHTTP(w, r)

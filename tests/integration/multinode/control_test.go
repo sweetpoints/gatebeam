@@ -84,7 +84,7 @@ func TestDualControlFailuresAndQueryCoverage(t *testing.T) {
 	b.Wait(t, "log-query", "query")
 	archive := lab.EnableArchive(t)
 	archive.WaitBoth(t)
-	a.Compose(t, "stop", "--timeout", "2", "background-jobs", "internal-ca")
+	a.Compose(t, "stop", "--timeout", "2", "background-jobs")
 	page = business.Query(t, "archive")
 	if page.Job.State != "succeeded" || len(page.Rows) == 0 {
 		t.Fatal("surviving worker did not query actual archived objects", page.Job)

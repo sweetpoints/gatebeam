@@ -17,17 +17,7 @@
   "notification_recipient": "age1_REPLACE_WITH_DEDICATED_NOTIFICATION_PUBLIC_RECIPIENT",
   "certificate_recipient": "age1_REPLACE_WITH_DEDICATED_LEAF_PUBLIC_RECIPIENT",
   "certificate_provider_recipient": "age1_REPLACE_WITH_DEDICATED_PROVIDER_PUBLIC_RECIPIENT",
-  "ca_recipient": "age1_REPLACE_WITH_DEDICATED_CA_PUBLIC_RECIPIENT",
   "ca_origin": "https://ca.internal.example:8444",
-  "ca_server_names": [
-    "app-a.internal.example",
-    "app-b.internal.example",
-    "openobserve.gatebeam.internal"
-  ],
-  "ca_client_names": [
-    "gateway-a.gatebeam.internal",
-    "gateway-b.gatebeam.internal"
-  ],
   "node_id": "11111111-1111-4111-8111-111111111111",
   "node_epoch": 1,
   "runtime_protocol": 1,
@@ -47,17 +37,19 @@
       "nginx": "http://10.42.0.30:19091",
       "management": "http://10.42.0.30:19092",
       "background-jobs": "http://10.42.0.30:19093",
-      "internal-ca": "http://10.42.0.30:19094",
       "log-query": "http://10.42.0.30:19095"
     },
     "22222222-2222-4222-8222-222222222222": {
       "nginx": "http://10.42.0.31:19091",
       "management": "http://10.42.0.31:19092",
       "background-jobs": "http://10.42.0.31:19093",
-      "internal-ca": "http://10.42.0.31:19094",
       "log-query": "http://10.42.0.31:19095"
     }
   },
   "api_tls_crl_file": "/run/gatebeam/api-client.crl",
-  "api_tls_state_file": "/var/lib/gatebeam/capsules/api/tls-status.json"
+  "api_tls_state_file": "/var/lib/gatebeam/capsules/api/tls-status.json",
+  "certificate_status_profiles_file": "/run/gatebeam/ca-status-profiles.json",
+  "certificate_status_trust_file": "/run/gatebeam/ca-status-trust.pem",
+  "ca_status_origin": "http://ca.internal.example:8081",
+  "certificate_acme_transport_trust_file": "/run/gatebeam/ca-transport-trust.pem"
 }

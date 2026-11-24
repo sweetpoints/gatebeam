@@ -14,6 +14,7 @@ import (
 	"gatebeam/internal/modules/pki"
 	pkiapp "gatebeam/internal/modules/pki/application"
 	acmeapp "gatebeam/internal/modules/pki/application/acme"
+	pkidomain "gatebeam/internal/modules/pki/domain"
 	pkicrypto "gatebeam/internal/modules/pki/infrastructure/crypto"
 	josecrypto "gatebeam/internal/modules/pki/infrastructure/jose"
 	pkipg "gatebeam/internal/modules/pki/infrastructure/postgres"
@@ -21,6 +22,7 @@ import (
 	"gatebeam/internal/platform/bootstrap"
 	"gatebeam/internal/platform/postgres"
 	"gatebeam/internal/platform/secrets"
+	"gatebeam/tests/fixtures/pkiauthority"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"io"
 	"net/http"
@@ -51,7 +53,7 @@ func (v webHTTP01) Validate(ctx context.Context, name, token, key string) error 
 }
 
 // webPKI hosts an owned standard CA and a separate ordinary lego worker.
-// Only a fresh age public recipient enters the API's enrollment assembly.
+// The fixture CA issues enrollment credentials before the browser configures the ACME client.
 func webPKI(t *testing.T, p *pgxpool.Pool) (bootstrap.Config, map[string]any) {
 	t.Helper()
 	ctx := context.Background()
@@ -103,6 +105,16 @@ func webPKI(t *testing.T, p *pgxpool.Pool) (bootstrap.Config, map[string]any) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	caOperator, e := pkiauthority.New(p, pki.GrantConfig{
+		ServerNames: []string{"entry.owned.test"}, ClientNames: []string{"client.owned.test"},
+	}, caSecret.Recipient())
+	if e != nil {
+		t.Fatal("load fixture CA operator:", e)
+	}
+	enrollment, eab, e := caOperator.Enroll(ctx, "server", pkidomain.ServerAuth, "entry.owned.test")
+	if e != nil {
+		t.Fatal("issue EAB on fixture CA:", e)
+	}
 	command, result := filepath.Join(dir, "command"), filepath.Join(dir, "result")
 	done := make(chan struct{})
 	t.Cleanup(func() { close(done) })
@@ -121,9 +133,17 @@ func webPKI(t *testing.T, p *pgxpool.Pool) (bootstrap.Config, map[string]any) {
 				c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				var err error
 				var v certapp.Version
+				var caState *pkiapp.QueryResult
 				switch in.Action {
 				case "mfa":
 					_, err = p.Exec(c, "UPDATE identity_accounts SET last_step=-1 WHERE name='browser-admin'")
+				case "inspect-ca":
+					state, queryErr := caOperator.Inspect(c, ca.URL)
+					caState, err = &state, queryErr
+				case "disable-ca":
+					err = caOperator.Disable(c, enrollment.Principal.ID)
+				case "revoke-ca":
+					err = caOperator.Revoke(c, string(issuer.Metadata().ID), in.ID)
 				case "prepare":
 					err = worker.PrepareCurrent(c)
 				case "renew":
@@ -137,7 +157,7 @@ func webPKI(t *testing.T, p *pgxpool.Pool) (bootstrap.Config, map[string]any) {
 					}
 				}
 				cancel()
-				out, _ := json.Marshal(map[string]any{"action": in.Action, "request": in.Request, "failed": err != nil, "version_id": v.ID})
+				out, _ := json.Marshal(map[string]any{"action": in.Action, "request": in.Request, "failed": err != nil, "version_id": v.ID, "ca": caState})
 				if e := os.WriteFile(result, out, 0600); e != nil {
 					t.Error("owned worker result write failed")
 				}
@@ -148,7 +168,7 @@ func webPKI(t *testing.T, p *pgxpool.Pool) (bootstrap.Config, map[string]any) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	return bootstrap.Config{CARecipient: caSecret.Recipient(), CAServerNames: []string{"entry.owned.test"}, CAClientNames: []string{"client.owned.test"}, CAOrigin: ca.URL, CertificateRecipient: leaf.Recipient(), CertificateProviderRecipient: provider.Recipient()}, map[string]any{"workerCommand": command, "workerResult": result, "trustPEM": string(root), "_leafIdentityPath": leafFile, "_providerRecipient": provider.Recipient()}
+	return bootstrap.Config{CARecipient: caSecret.Recipient(), CAServerNames: []string{"entry.owned.test"}, CAClientNames: []string{"client.owned.test"}, CAOrigin: ca.URL, CertificateRecipient: leaf.Recipient(), CertificateProviderRecipient: provider.Recipient()}, map[string]any{"eab": eab, "workerCommand": command, "workerResult": result, "trustPEM": string(root), "_leafIdentityPath": leafFile, "_providerRecipient": provider.Recipient()}
 }
 
 type webPKICommand struct {

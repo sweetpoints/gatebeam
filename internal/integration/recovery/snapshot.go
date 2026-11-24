@@ -35,6 +35,7 @@ func validSnapshotRow(row []byte) bool {
 type Snapshot struct {
 	DB                                *pgxpool.Pool
 	Capsules, Epoch, Recipient, Spool string
+	ExternalCA                        bool
 }
 
 func schemaDigest() string { c, _ := SchemaContract(CurrentSchema); return c.Digest }
@@ -52,7 +53,7 @@ func (s Snapshot) Export(ctx context.Context) (application.Artifact, error) {
 	if e := CheckSnapshotRole(ctx, s.DB); e != nil {
 		return application.Artifact{}, e
 	}
-	caps, e := archive.ReadCapsules(s.Capsules, s.Epoch, s.Recipient)
+	caps, e := archive.ReadCapsulesForCA(s.Capsules, s.Epoch, s.Recipient, s.ExternalCA)
 	if e != nil {
 		return application.Artifact{}, e
 	}
@@ -144,14 +145,14 @@ func (s Snapshot) Export(ctx context.Context) (application.Artifact, error) {
 	if e != nil {
 		return application.Artifact{}, ErrRecovery
 	}
-	again, e := archive.ReadCapsules(s.Capsules, s.Epoch, s.Recipient)
+	again, e := archive.ReadCapsulesForCA(s.Capsules, s.Epoch, s.Recipient, s.ExternalCA)
 	if e != nil || !reflect.DeepEqual(caps, again) {
 		return application.Artifact{}, ErrRecovery
 	}
 	for n, b := range caps {
 		files[n] = b
 	}
-	return archive.Write(ctx, s.Spool, s.Recipient, application.Manifest{Version: 1, Created: now, Snapshot: snapshot, Epoch: s.Epoch, Schema: contract.Digest}, files)
+	return archive.Write(ctx, s.Spool, s.Recipient, application.Manifest{Version: 1, ExternalCA: s.ExternalCA, Created: now, Snapshot: snapshot, Epoch: s.Epoch, Schema: contract.Digest}, files)
 }
 func validate(a application.Archive) error {
 	contract, e := contractByDigest(a.Manifest.Schema)
@@ -197,7 +198,7 @@ func (Decoder) Decode(ctx context.Context, source, identity string) (application
 	if e = validate(a); e != nil {
 		return application.Archive{}, "", e
 	}
-	if _, e = archive.OpenCapsules(a.Files, a.Manifest.Epoch, identity); e != nil {
+	if _, e = archive.OpenCapsulesForCA(a.Files, a.Manifest.Epoch, identity, a.Manifest.ExternalCA); e != nil {
 		return application.Archive{}, "", e
 	}
 	return a, d, nil

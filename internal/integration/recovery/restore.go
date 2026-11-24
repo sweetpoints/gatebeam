@@ -32,7 +32,7 @@ func (d *Destination) Stage(ctx context.Context, a application.Archive) error {
 	if e != nil {
 		return e
 	}
-	keys, e := archive.OpenCapsules(a.Files, a.Manifest.Epoch, d.Identity)
+	keys, e := archive.OpenCapsulesForCA(a.Files, a.Manifest.Epoch, d.Identity, a.Manifest.ExternalCA)
 	if e != nil {
 		return e
 	}
@@ -163,7 +163,7 @@ func (d *Destination) Stage(ctx context.Context, a application.Archive) error {
 			root.RemoveAll(name)
 		}
 	}()
-	for _, role := range archive.Roles {
+	for _, role := range archive.CapsuleRoles(a.Manifest.ExternalCA) {
 		if e = out.Mkdir(role, 0700); e != nil {
 			return ErrRecovery
 		}

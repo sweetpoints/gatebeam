@@ -56,7 +56,7 @@ func enrolledPeers(t *testing.T, f *fixture) nodePeers {
 		}
 		images := map[string]string{}
 		protocols := map[string]uint32{}
-		for _, role := range []string{"nginx", "management", "background-jobs", "internal-ca", "log-query"} {
+		for _, role := range []string{"nginx", "management", "background-jobs", "log-query"} {
 			images[role] = image
 			protocols[role] = 1
 		}

@@ -1,0 +1,7 @@
+{
+  "database_file": "/etc/gatebeam-ca/admin.dsn",
+  "origin": "https://ca.internal.example:8444",
+  "recipient": "REPLACE_WITH_THE_CONTENTS_OF_RECIPIENT_TXT",
+  "server_names": ["backend.internal.example"],
+  "client_names": ["gateway.internal.example"]
+}

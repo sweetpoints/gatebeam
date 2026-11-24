@@ -61,10 +61,8 @@ ENTRYPOINT ["/usr/local/bin/gatebeam"]
 CMD ["--config", "/run/gatebeam/worker.json"]
 
 FROM scratch AS ca
-COPY --from=edge --chown=101:101 --chmod=0700 /var/lib/gatebeam/capsules/ca /var/lib/gatebeam/capsules/ca
 COPY --from=edge /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-COPY --from=edge /usr/local/bin/gatebeam /usr/local/bin/gatebeam
-COPY --from=edge /usr/local/bin/gatebeam-admin /usr/local/bin/gatebeam-admin
+COPY --chown=101:101 .work/build/gatebeam-ca /usr/local/bin/gatebeam-ca
 USER 101:101
-ENTRYPOINT ["/usr/local/bin/gatebeam"]
-CMD ["--config", "/run/gatebeam/ca.json"]
+ENTRYPOINT ["/usr/local/bin/gatebeam-ca"]
+CMD ["serve", "-config", "/run/gatebeam-ca/serve.json"]

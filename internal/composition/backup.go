@@ -92,7 +92,7 @@ func exportBackup(ctx context.Context, c bootstrap.Config) error {
 		return e
 	}
 	defer p.Close()
-	_, e = (recovery.Snapshot{DB: p, Capsules: c.BackupCapsuleDirectory, Epoch: c.BackupEpoch, Recipient: c.BackupRecipient, Spool: c.BackupSpoolDirectory}).Export(ctx)
+	_, e = (recovery.Snapshot{DB: p, Capsules: c.BackupCapsuleDirectory, Epoch: c.BackupEpoch, Recipient: c.BackupRecipient, Spool: c.BackupSpoolDirectory, ExternalCA: c.BackupExternalCA}).Export(ctx)
 	return e
 }
 func restoreBackup(ctx context.Context, c bootstrap.Config) (result error) {

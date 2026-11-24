@@ -14,6 +14,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -211,45 +212,104 @@ func (h LocalHost) functionalCanary(ctx context.Context, kind, id string) error 
 	}
 	return nil
 }
+func caProbeURL(raw, scheme, path string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != scheme || u.Hostname() == "" || raw != scheme+"://"+u.Host {
+		return "", ErrOperation
+	}
+	u.Path = path
+	return u.String(), nil
+}
+
+func (h LocalHost) externalCADirectory(ctx context.Context) error {
+	cfg, err := h.config("management")
+	if err != nil {
+		return err
+	}
+	address, err := caProbeURL(cfg.CAOrigin, "https", "/acme/server/directory")
+	if err != nil {
+		return err
+	}
+	trust, err := h.fileInRole("management", cfg.CertificateACMETransportTrustFile)
+	if err != nil {
+		return err
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(trust) {
+		return ErrOperation
+	}
+	client := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	defer client.CloseIdleConnections()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
+	if err != nil {
+		return err
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	var directory struct {
+		NewNonce string `json:"newNonce"`
+		NewOrder string `json:"newOrder"`
+	}
+	if response.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(response.Body, 65536)).Decode(&directory) != nil || directory.NewNonce == "" || directory.NewOrder == "" {
+		return ErrOperation
+	}
+	return nil
+}
+
 func (h LocalHost) statusCanary(ctx context.Context) error {
-	cfg, e := h.config("internal-ca")
+	cfg, e := h.config("management")
 	if e != nil {
 		return e
 	}
-	rootPEM, e := h.fileInRole("internal-ca", cfg.CARootFile)
+	data, e := h.fileInRole("management", cfg.CertificateStatusTrustFile)
 	if e != nil {
 		return e
 	}
-	block, _ := pem.Decode(rootPEM)
-	if block == nil {
+	var certs []*x509.Certificate
+	for len(bytes.TrimSpace(data)) > 0 && len(certs) < 20 {
+		block, rest := pem.Decode(data)
+		if block == nil || block.Type != "CERTIFICATE" {
+			return ErrOperation
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil || !cert.IsCA {
+			return ErrOperation
+		}
+		certs = append(certs, cert)
+		data = rest
+	}
+	var root, issuer *x509.Certificate
+	for _, child := range certs {
+		if child.CheckSignatureFrom(child) == nil {
+			continue
+		}
+		for _, parent := range certs {
+			if parent.CheckSignatureFrom(parent) == nil && child.CheckSignatureFrom(parent) == nil {
+				root, issuer = parent, child
+				break
+			}
+		}
+		if issuer != nil {
+			break
+		}
+	}
+	if issuer == nil {
 		return ErrOperation
-	}
-	root, e := x509.ParseCertificate(block.Bytes)
-	if e != nil {
-		return ErrOperation
-	}
-	issuerPEM, e := h.fileInRole("internal-ca", cfg.CACertificateFile)
-	if e != nil {
-		return e
-	}
-	block, _ = pem.Decode(issuerPEM)
-	if block == nil {
-		return ErrOperation
-	}
-	issuer, e := x509.ParseCertificate(block.Bytes)
-	if e != nil {
-		return e
 	}
 	request, e := ocsp.CreateRequest(issuer, root, nil)
 	if e != nil {
 		return ErrOperation
 	}
-	_, port, e := net.SplitHostPort(cfg.CAStatusListen)
+	address, e := caProbeURL(cfg.CAStatusOrigin, "http", "/ocsp")
 	if e != nil {
 		return e
 	}
 	client := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	req, e := http.NewRequestWithContext(ctx, "POST", "http://"+net.JoinHostPort(h.Configuration.Node.PrivateAddress, port)+"/ocsp", bytes.NewReader(request))
+	req, e := http.NewRequestWithContext(ctx, "POST", address, bytes.NewReader(request))
 	if e != nil {
 		return ErrOperation
 	}

@@ -29,7 +29,7 @@ import (
 
 type distributionLeafStatus struct{ revoked bool }
 
-func (s *distributionLeafStatus) ValidateLeafWithin(transaction.Scope, cert.Version, bool) error {
+func (s *distributionLeafStatus) ValidateLeafWithin(transaction.Scope, cert.StoredVersion, bool) error {
 	if s.revoked {
 		return certdomain.ErrUnavailable
 	}

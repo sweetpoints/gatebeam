@@ -7,7 +7,6 @@
     "api": "age1_REPLACE_WITH_NODE_A_API_PUBLIC_RECIPIENT",
     "provider": "age1_REPLACE_WITH_NODE_A_PROVIDER_PUBLIC_RECIPIENT",
     "notification": "age1_REPLACE_WITH_NODE_A_NOTIFICATION_PUBLIC_RECIPIENT",
-    "ca": "age1_REPLACE_WITH_NODE_A_CA_PUBLIC_RECIPIENT",
     "leaf": "age1_REPLACE_WITH_NODE_A_LEAF_PUBLIC_RECIPIENT"
   },
   "Principal": "gatebeam_a_edge_e1",
@@ -21,14 +20,12 @@
     "nginx": "sha256:REPLACE_64_HEX",
     "management": "sha256:REPLACE_64_HEX",
     "background-jobs": "sha256:REPLACE_64_HEX",
-    "internal-ca": "sha256:REPLACE_64_HEX",
     "log-query": "sha256:REPLACE_64_HEX"
   },
   "RoleProtocols": {
     "nginx": 1,
     "management": 1,
     "background-jobs": 1,
-    "internal-ca": 1,
     "log-query": 1
   }
 }

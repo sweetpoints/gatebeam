@@ -49,7 +49,7 @@ case "${1:-acme}" in
   arch=$(gatebeam_target_arch)
   python3 scripts/aggregate-command.py 90 env GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go test -c -tags integration -p 2 -o .work/build/pki-native ./tests/integration/pki
   export GATEBEAM_P3_NATIVE_BINARY="$PWD/.work/build/pki-native"
-  ./scripts/check-db.sh ./internal/modules/pki/...
+  ./scripts/check-db.sh ./internal/modules/pki/... ./gatebeam-ca/...
   exec ./scripts/check-db.sh ./tests/integration/pki ;;
 
  *) echo 'usage: check-pki.sh acme|status|public-client|native-integration|offline-cache' >&2; exit 2 ;;
