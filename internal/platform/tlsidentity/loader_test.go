@@ -1,6 +1,7 @@
 package tlsidentity
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -70,6 +71,32 @@ func TestReloadAndRevocationFloor(t *testing.T) {
 	}
 	crl(1, false)
 	cfg := Config{CertificateFile: filepath.Join(dir, "cert"), KeyFile: filepath.Join(dir, "key"), TrustFile: filepath.Join(dir, "trust"), CRLFile: filepath.Join(dir, "crl"), StateFile: filepath.Join(dir, "floor"), NodeID: "owned", ServerName: "owned.test", ClientNames: []string{"owned.test"}}
+	t.Run("CRL issued during fetch", func(t *testing.T) {
+		fetchConfig := cfg
+		fetchConfig.StateFile = filepath.Join(dir, "fetch-floor")
+		loader, err := New(fetchConfig)
+		if err != nil {
+			t.Fatal(err)
+		}
+		requestTime := now.Add(-time.Second)
+		loader.cfg.FetchCRL = func(context.Context) ([]byte, error) {
+			return x509.CreateRevocationList(rand.Reader, &x509.RevocationList{
+				Number: big.NewInt(2), ThisUpdate: now, NextUpdate: now.Add(20 * time.Minute),
+			}, ca, key)
+		}
+		if err := loader.load(requestTime); err != nil {
+			t.Fatalf("signed CRL issued while request was in flight: %v", err)
+		}
+		loader.nextFetch = time.Time{}
+		loader.cfg.FetchCRL = func(context.Context) ([]byte, error) {
+			return x509.CreateRevocationList(rand.Reader, &x509.RevocationList{
+				Number: big.NewInt(3), ThisUpdate: now.Add(time.Minute), NextUpdate: now.Add(20 * time.Minute),
+			}, ca, key)
+		}
+		if err := loader.load(time.Now().UTC()); err == nil {
+			t.Fatal("future-dated CRL accepted")
+		}
+	})
 	l, e := New(cfg)
 	if e != nil {
 		t.Fatal(e)

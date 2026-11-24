@@ -44,7 +44,7 @@ func TestBothNodesColdStartWithAllControlDependenciesStopped(t *testing.T) {
 		}
 	}
 	fixture.Docker(t, "network", "connect", "--alias", "database", lab.Network, db)
-	fixture.Docker(t, "start", lab.CAContainer)
+	lab.RestartCA(t)
 	for _, n := range lab.Nodes {
 		n.Compose(t, "start", "management", "background-jobs", "log-query")
 		n.Wait(t, "management", "management")

@@ -261,6 +261,12 @@ func (l *Loader) load(now time.Time) error {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			fresh, fetchErr := l.cfg.FetchCRL(ctx)
 			cancel()
+			// The authority may sign the CRL while this request is in flight.
+			receivedAt := time.Now().UTC()
+			if receivedAt.Before(now) {
+				return ErrUnavailable
+			}
+			now = receivedAt
 			l.nextFetch = now.Add(30 * time.Second)
 			if fetchErr == nil {
 				l.fetchedCRL = fresh
