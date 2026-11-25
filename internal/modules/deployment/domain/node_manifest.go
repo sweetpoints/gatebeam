@@ -12,7 +12,7 @@ type NodeDeployment struct {
 	CanaryFile      string                    `json:"canary_file,omitempty"`
 	Node            NodeRef                   `json:"node"`
 	PrivateAddress  string                    `json:"private_address"`
-	PeerAddress     string                    `json:"peer_address"`
+	PeerAddress     string                    `json:"peer_address,omitempty"`
 	Instance        string                    `json:"instance"`
 	InstanceGroup   string                    `json:"instance_group"`
 	PublicBackend   string                    `json:"public_backend"`
@@ -50,7 +50,7 @@ func (n NodeDeployment) Validate() error {
 	}
 	own, e := netip.ParseAddr(n.PrivateAddress)
 	peer, pe := netip.ParseAddr(n.PeerAddress)
-	if !n.Node.Valid() || e != nil || pe != nil || !own.IsPrivate() || !peer.IsPrivate() || own == peer || !instanceRef.MatchString(n.Instance) || !groupRef.MatchString(n.InstanceGroup) || !backendRef.MatchString(n.PublicBackend) || !backendRef.MatchString(n.PrivateBackend) || !operatorFile(n.ComposeFile) || !operatorFile(n.EnvironmentFile) || !storageName.MatchString(n.StoragePrefix) || len(n.Roles) != len(NodeRoleNames()) {
+	if !n.Node.Valid() || e != nil || !own.IsPrivate() || n.PeerAddress != "" && (pe != nil || !peer.IsPrivate() || own == peer) || !instanceRef.MatchString(n.Instance) || !groupRef.MatchString(n.InstanceGroup) || !backendRef.MatchString(n.PublicBackend) || !backendRef.MatchString(n.PrivateBackend) || !operatorFile(n.ComposeFile) || !operatorFile(n.EnvironmentFile) || !storageName.MatchString(n.StoragePrefix) || len(n.Roles) != len(NodeRoleNames()) {
 		return ErrInvalid
 	}
 	ports := map[int]bool{}
@@ -69,3 +69,32 @@ func (n NodeDeployment) Validate() error {
 }
 
 func ValidInstanceReference(s string) bool { return instanceRef.MatchString(s) }
+
+// MaxFleetNodes matches the supported age recipient envelope for an active fleet.
+const MaxFleetNodes = 32
+
+// ValidateNodeInventory validates the protected list for a single gateway fleet.
+func ValidateNodeInventory(nodes []NodeDeployment) error {
+	if len(nodes) == 0 || len(nodes) > MaxFleetNodes {
+		return ErrInvalid
+	}
+	first := nodes[0]
+	ids, instances, groups, storage := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
+	addresses := map[netip.Addr]bool{}
+	for _, n := range nodes {
+		if n.Validate() != nil || n.PublicBackend == n.PrivateBackend || n.PublicBackend != first.PublicBackend || n.PrivateBackend != first.PrivateBackend {
+			return ErrInvalid
+		}
+		address, _ := netip.ParseAddr(n.PrivateAddress)
+		address = address.Unmap()
+		if ids[n.Node.ID] || addresses[address] || instances[n.Instance] || groups[n.InstanceGroup] || storage[n.StoragePrefix] {
+			return ErrInvalid
+		}
+		ids[n.Node.ID] = true
+		addresses[address] = true
+		instances[n.Instance] = true
+		groups[n.InstanceGroup] = true
+		storage[n.StoragePrefix] = true
+	}
+	return nil
+}

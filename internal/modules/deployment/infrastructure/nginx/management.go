@@ -4,6 +4,8 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"net/netip"
+	"slices"
 	"strings"
 )
 
@@ -42,9 +44,25 @@ func (b *builder) management(w *strings.Builder) error {
 	b.files["materials/management.key"] = append([]byte{}, m.KeyPEM...)
 
 	proxy := "proxy_next_upstream off;\n  proxy_pass http://" + m.APIAddress.String() + ";"
-	if m.PeerAPIAddress.IsValid() || m.UpstreamTLS != nil {
-		if m.UpstreamTLS == nil || !m.PeerAPIAddress.IsValid() || !m.PeerAPIAddress.Addr().IsPrivate() || m.PeerAPIAddress == m.APIAddress {
+	peers := slices.Clone(m.AdditionalAPIAddresses)
+	if m.PeerAPIAddress.IsValid() {
+		peers = append([]netip.AddrPort{m.PeerAPIAddress}, peers...)
+	}
+	if len(peers) > 0 || m.UpstreamTLS != nil {
+		if m.UpstreamTLS == nil {
 			return ErrInvalid
+		}
+		configured := map[netip.AddrPort]bool{m.APIAddress: true}
+		for _, peer := range peers {
+			if !peer.Addr().IsPrivate() || peer.Port() == 0 || configured[peer] {
+				return ErrInvalid
+			}
+			configured[peer] = true
+		}
+		for _, unavailable := range m.UnavailableAPIAddresses {
+			if !configured[unavailable] {
+				return ErrInvalid
+			}
 		}
 		policy := m.UpstreamTLS
 		if !validName(policy.ServerName) {
@@ -76,19 +94,25 @@ func (b *builder) management(w *strings.Builder) error {
 		b.files["materials/management-upstream-trust.pem"] = append([]byte{}, policy.TrustPEM...)
 		b.files["materials/management-upstream.pem"] = append([]byte{}, policy.CertificatePEM...)
 		b.files["materials/management-upstream.key"] = append([]byte{}, policy.KeyPEM...)
-		if m.APIUnavailable && m.PeerUnavailable {
+		primaryAvailable := !m.APIUnavailable && !slices.Contains(m.UnavailableAPIAddresses, m.APIAddress)
+		availablePeers := make([]netip.AddrPort, 0, len(peers))
+		for _, peer := range peers {
+			if (peer == m.PeerAPIAddress && m.PeerUnavailable) || slices.Contains(m.UnavailableAPIAddresses, peer) {
+				continue
+			}
+			availablePeers = append(availablePeers, peer)
+		}
+		if !primaryAvailable && len(availablePeers) == 0 {
 			proxy = "return 503;"
 		} else {
 			w.WriteString("upstream gatebeam_management {\n")
-			if !m.APIUnavailable {
+			backup := ""
+			if primaryAvailable {
 				fmt.Fprintf(w, " server %s max_fails=1 fail_timeout=2s;\n", m.APIAddress)
+				backup = " backup"
 			}
-			if !m.PeerUnavailable {
-				backup := " backup"
-				if m.APIUnavailable {
-					backup = ""
-				}
-				fmt.Fprintf(w, " server %s%s max_fails=1 fail_timeout=2s;\n", m.PeerAPIAddress, backup)
+			for _, peer := range availablePeers {
+				fmt.Fprintf(w, " server %s%s max_fails=1 fail_timeout=2s;\n", peer, backup)
 			}
 			w.WriteString("}\n")
 			proxy = fmt.Sprintf(`proxy_next_upstream error timeout;

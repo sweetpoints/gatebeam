@@ -46,18 +46,26 @@ func (s *Service) RegisterWithin(sc transaction.Scope, r NodeRegistration) (doma
 	return ref, err
 }
 func (s *Service) ActivateWithin(sc transaction.Scope, refs []domain.NodeRef) error {
-	if len(refs) != 2 || refs[0].ID == refs[1].ID {
-		return domain.ErrInvalid
-	}
-	for _, ref := range refs {
-		if !ref.Valid() {
-			return domain.ErrInvalid
-		}
+	if err := validateActivationRefs(refs); err != nil {
+		return err
 	}
 	if err := s.repo.ActivateNodes(sc, refs); err != nil {
 		return err
 	}
 	return s.recordAdmin(sc, "deployment.nodes.activated", refs)
+}
+func validateActivationRefs(refs []domain.NodeRef) error {
+	if len(refs) == 0 || len(refs) > domain.MaxFleetNodes {
+		return domain.ErrInvalid
+	}
+	seen := make(map[string]bool, len(refs))
+	for _, ref := range refs {
+		if !ref.Valid() || seen[ref.ID] {
+			return domain.ErrInvalid
+		}
+		seen[ref.ID] = true
+	}
+	return nil
 }
 func (s *Service) SetStatusWithin(sc transaction.Scope, node domain.NodeRef, status string) error {
 	if !node.Valid() || !slices.Contains([]string{"active", "quarantined", "revoked"}, status) {
@@ -85,7 +93,7 @@ func (s *Service) SetDesiredWithin(sc transaction.Scope, id string) ([]domain.No
 	if err != nil {
 		return nil, err
 	}
-	if len(targets) != 2 {
+	if len(targets) == 0 {
 		return nil, domain.ErrUnavailable
 	}
 	if err = s.repo.SetNodeDesired(sc, id, targets); err != nil {
@@ -218,11 +226,10 @@ func (s *Service) AuthorizeLegacyMappingWithin(sc transaction.Scope, node string
 }
 
 func (s *Service) ActivateVerifiedWithin(sc transaction.Scope, proof []ActivationProbe) error {
-	if len(proof) != 2 || proof[0].Node.ID == proof[1].Node.ID {
-		return domain.ErrInvalid
-	}
+	refs := make([]domain.NodeRef, 0, len(proof))
 	for _, p := range proof {
-		if !p.Node.Valid() || !digest.MatchString(p.ArtifactID) || !token.MatchString(p.Generation) || len(p.Images) != len(roles) {
+		refs = append(refs, p.Node)
+		if !digest.MatchString(p.ArtifactID) || !token.MatchString(p.Generation) || len(p.Images) != len(roles) {
 			return domain.ErrInvalid
 		}
 		for _, role := range roles {
@@ -230,6 +237,9 @@ func (s *Service) ActivateVerifiedWithin(sc transaction.Scope, proof []Activatio
 				return domain.ErrInvalid
 			}
 		}
+	}
+	if err := validateActivationRefs(refs); err != nil {
+		return err
 	}
 	r, ok := s.repo.(interface {
 		VerifyNodeActivationWithin(transaction.Scope, []ActivationProbe) error
@@ -240,7 +250,7 @@ func (s *Service) ActivateVerifiedWithin(sc transaction.Scope, proof []Activatio
 	if e := r.VerifyNodeActivationWithin(sc, proof); e != nil {
 		return e
 	}
-	return s.ActivateWithin(sc, []domain.NodeRef{proof[0].Node, proof[1].Node})
+	return s.ActivateWithin(sc, refs)
 }
 
 func (s *Service) ReadRoleRecipientWithin(sc transaction.Scope, ref domain.NodeRef, role string) (string, error) {

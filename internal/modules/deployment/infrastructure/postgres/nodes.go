@@ -38,6 +38,21 @@ func nodeManager(ctx context.Context, q *dbgen.Queries) error {
 	}
 	return nil
 }
+
+// nodeMembershipWritable is called while holding the registry lock also used
+// to open an upgrade batch. Emergency node revocation uses its own path.
+func nodeMembershipWritable(ctx context.Context, tx pgx.Tx) error {
+	var busy bool
+	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM deployment_upgrade_runs WHERE state IN ('running', 'paused'))`).Scan(&busy)
+	if err != nil {
+		return err
+	}
+	if busy {
+		return domain.ErrConflict
+	}
+	return nil
+}
+
 func eligibleNodeLogin(ctx context.Context, tx pgx.Tx, principal string) (bool, error) {
 	var eligible bool
 	err := tx.QueryRow(ctx, `SELECT rolcanlogin AND NOT EXISTS(
@@ -75,6 +90,9 @@ func (*Store) RegisterNode(sc transaction.Scope, r nodes.NodeRegistration) (out 
 	err = platform.Use(sc, func(ctx context.Context, tx pgx.Tx) error {
 		q := dbgen.New(tx)
 		if err := nodeManager(ctx, q); err != nil {
+			return err
+		}
+		if err := nodeMembershipWritable(ctx, tx); err != nil {
 			return err
 		}
 		valid, err := eligibleNodeLogin(ctx, tx, r.Principal)
@@ -193,6 +211,9 @@ func (*Store) ActivateNodes(sc transaction.Scope, refs []domain.NodeRef) error {
 		if err := nodeManager(ctx, q); err != nil {
 			return err
 		}
+		if err := nodeMembershipWritable(ctx, tx); err != nil {
+			return err
+		}
 		legacy, legacyErr := q.CurrentVerified(ctx)
 		if legacyErr != nil && !errors.Is(legacyErr, pgx.ErrNoRows) {
 			return legacyErr
@@ -265,9 +286,6 @@ func (*Store) ActiveNodeTargets(sc transaction.Scope) (out []domain.NodeRef, err
 		}
 		for _, row := range rows {
 			out = append(out, domain.NodeRef{ID: uuid.UUID(row.ID.Bytes).String(), Epoch: uint64(row.Epoch)})
-		}
-		if len(out) != 0 && len(out) != 2 {
-			return domain.ErrUnavailable
 		}
 		return nil
 	})
@@ -505,6 +523,22 @@ func (*Store) VerifyNodeActivationWithin(sc transaction.Scope, proof []nodes.Act
 		if e := nodeManager(ctx, q); e != nil {
 			return e
 		}
+		enabled, err := q.EnabledNodeTargets(ctx)
+		if err != nil {
+			return err
+		}
+		requested := make(map[domain.NodeRef]bool, len(proof))
+		for _, observed := range proof {
+			requested[observed.Node] = true
+		}
+		for _, row := range enabled {
+			ref := domain.NodeRef{ID: uuid.UUID(row.ID.Bytes).String(), Epoch: uint64(row.Epoch)}
+			if row.State == "active" && !requested[ref] {
+				// An activation is additive. Removing a serving node is a
+				// separate operation after entry and management traffic drain.
+				return domain.ErrConflict
+			}
+		}
 		current, currentErr := q.CurrentVerified(ctx)
 		if currentErr != nil && !errors.Is(currentErr, pgx.ErrNoRows) {
 			return currentErr
@@ -551,7 +585,7 @@ func (*Store) ReadActiveTargetsWithin(sc transaction.Scope) (out []domain.NodeRe
 		for _, r := range rows {
 			out = append(out, domain.NodeRef{ID: uuid.UUID(r.ID.Bytes).String(), Epoch: uint64(r.Epoch)})
 		}
-		if len(out) != 2 {
+		if len(out) == 0 {
 			return domain.ErrUnavailable
 		}
 		return nil

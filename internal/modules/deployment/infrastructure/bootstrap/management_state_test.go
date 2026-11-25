@@ -5,6 +5,8 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
+
 	"testing"
 )
 
@@ -66,5 +68,37 @@ func TestInitialManagementStateNeverReopensExcludedPeer(t *testing.T) {
 	state, e := InitializeManagementState(path, a, b)
 	if e != nil || state.Revision != 2 || len(state.Unavailable) != 1 || state.Unavailable[0] != b.String() {
 		t.Fatal("initialization reset prior maintenance authority", state, e)
+	}
+}
+
+func TestRegisterManagementPeerKeepsNewProtectedAddressExcluded(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "management.json")
+	primary := netip.MustParseAddrPort("10.0.0.1:9443")
+	peer := netip.MustParseAddrPort("10.0.0.2:9443")
+	prefixes := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/24")}
+	if _, err := InitializeManagementState(path, primary, netip.AddrPort{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RegisterManagementPeer(path, primary, netip.AddrPort{}, "10.0.1.2:9443", prefixes); err == nil {
+		t.Fatal("unprotected address added online")
+	}
+	state, err := RegisterManagementPeer(path, primary, netip.AddrPort{}, peer.String(), prefixes)
+	if err != nil || len(state.DynamicPeers) != 1 || !slices.Contains(state.Unavailable, peer.String()) {
+		t.Fatalf("new endpoint was not staged as excluded: %+v, %v", state, err)
+	}
+	restarted, err := ReadManagementState(path, primary, netip.AddrPort{})
+	if err != nil || restarted.Digest() != state.Digest() {
+		t.Fatal("restart lost staged peer", err)
+	}
+	enabled, err := UpdateManagementState(path, primary, netip.AddrPort{}, peer.String(), false)
+	if err != nil || enabled.Digest() == state.Digest() || len(enabled.Unavailable) != 0 {
+		t.Fatal("staged peer could not be enabled", err)
 	}
 }

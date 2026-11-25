@@ -29,6 +29,7 @@ type Config struct {
 	HealthEndpoints                    map[string]map[string]string `json:"health_endpoints,omitempty"`
 	APITLSClientNames                  []string                     `json:"api_tls_client_names,omitempty"`
 	RuntimeState                       *lifecycle.State             `json:"-"`
+	ManagementAPIAdditionalAddresses   []string                     `json:"management_api_additional_addresses,omitempty"`
 	ManagementAPIPeerAddress           string                       `json:"management_api_peer_address,omitempty"`
 	ManagementAPIName                  string                       `json:"management_api_name,omitempty"`
 	ManagementAPITrustFile             string                       `json:"management_api_trust_file,omitempty"`

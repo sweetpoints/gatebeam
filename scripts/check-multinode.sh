@@ -8,7 +8,7 @@ while [ "$#" -gt 0 ]; do
  --nodes) nodes=$2;shift 2;;
  --budget) budget=$2;shift 2;;
  --suite) suite=$2;shift 2;;
- *) echo 'usage: check-multinode.sh --manifest FILE --nodes FILE --budget FILE [--suite all|runtime|control|upgrade|capacity|bootstrap|maintenance]' >&2;exit 2;;
+ *) echo 'usage: check-multinode.sh --manifest FILE --nodes FILE --budget FILE [--suite all|runtime|control|upgrade|capacity|bootstrap|maintenance|inventory]' >&2;exit 2;;
  esac
 done
 [ -n "$manifest" ] && [ -n "$nodes" ] && [ -n "$budget" ] || { echo 'explicit manifest, owned node config and budget required' >&2;exit 2; }
@@ -27,6 +27,7 @@ export GATEBEAM_COMPOSE_ADMIN_BINARY="$PWD/.work/build/gatebeam-admin"
 export GATEBEAM_COMPOSE_PROBE_BINARY="$PWD/.work/build/multinode-capabilities"
 export GATEBEAM_COMPOSE_EXACT_IMAGES=1
 runtime=TestBothNodesColdStartWithAllControlDependenciesStopped
+inventory='TestSingleNodeColdStartWithAllControlDependenciesStopped TestThreeNodesPublishAndRollWithoutLosingNewRequests TestTemporarySecondNodeCarriesTrafficDuringOriginalUpgrade TestCapacityLossReattachesGatewayBeforeDrain'
 control='TestDualControlFailuresAndQueryCoverage TestPrivateTLSRotationAndRevocationAcrossRestart TestFunctionalCanaryRejectsQueryAndArchiveFailures TestPrivateRolesObtainAndAutomaticallyLoadStandardACME TestCapsuleEnabledMaintenanceSurvivesEdgeControlRestart TestWorkerConstructorFailureBlocksReadinessButPreservesLocalQueries'
 upgrade='TestExecutorProcessInterruptionAndRejectedVersion TestWholeNodeMaintenanceRetainsOfflineBoot'
 capacity=TestSingleNodeMeasuredCapacityWithQueryContention
@@ -35,9 +36,10 @@ case "$suite" in
  control) cases=$control;;
  upgrade) cases=$upgrade;;
  capacity) cases=$capacity;;
- bootstrap) cases="$runtime $control";;
+ bootstrap) cases="$runtime $control $inventory";;
  maintenance) cases=$upgrade;;
- all) cases="$runtime $control $upgrade $capacity";;
+ inventory) cases=$inventory;;
+ all) cases="$runtime $control $upgrade $capacity $inventory";;
  *) echo 'unknown suite' >&2;exit 2;;
 esac
 for test in $cases; do

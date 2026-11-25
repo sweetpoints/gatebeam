@@ -14,8 +14,16 @@ func TestMain(m *testing.M) {
 	}
 	os.Exit(m.Run())
 }
+func TestSingleNodeColdStartWithAllControlDependenciesStopped(t *testing.T) {
+	verifyOfflineColdStart(t, fixture.StartSingle(t))
+}
+
 func TestBothNodesColdStartWithAllControlDependenciesStopped(t *testing.T) {
-	lab := fixture.Start(t)
+	verifyOfflineColdStart(t, fixture.Start(t))
+}
+
+func verifyOfflineColdStart(t *testing.T, lab *fixture.Lab) {
+	t.Helper()
 	site := lab.Business(t)
 	for _, n := range lab.Nodes {
 		if code := site.Get(t, n, "/"); code != 200 {
@@ -52,5 +60,5 @@ func TestBothNodesColdStartWithAllControlDependenciesStopped(t *testing.T) {
 			t.Fatal("reconcile interrupted business", code)
 		}
 	}
-	t.Log("both native Nginx containers destroyed/recreated against retained confirmed storage with PG link isolated and API/jobs/query/CA stopped; this is not a GCP kernel-reboot acceptance")
+	t.Logf("%d Nginx containers recreated against retained confirmed storage with PG link isolated and API/jobs/query/CA stopped", len(lab.Nodes))
 }

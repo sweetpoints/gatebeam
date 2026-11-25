@@ -71,7 +71,7 @@ func ExecuteDeployment(ctx context.Context, plan upgrade.Plan, config, executor,
 			return e
 		}
 		plan = r.Plan
-		if e = deploymentCapacity(plan); e != nil {
+		if e = verifyDeploymentCapacity(plan, upgrade.ValidateRecoveryCapacity); e != nil {
 			return e
 		}
 	}
@@ -86,8 +86,14 @@ func ExecuteDeployment(ctx context.Context, plan upgrade.Plan, config, executor,
 	if e = check(ctx); e != nil {
 		return e
 	}
-	adapter := &operations.Adapter{Plan: plan, Cloud: operations.Cloud{Token: operations.GcloudToken}, Host: operations.SSHHost{}, Approver: store, CheckCompatibility: check}
-	x := upgrade.Executor{Store: store, Operations: adapter, ExecutorInstance: executor}
+	adapter := &operations.Adapter{Plan: plan, Cloud: operations.Cloud{Token: operations.GcloudToken}, Host: operations.SSHHost{}, Approver: store, Retirement: store, CheckCompatibility: check}
+	checkStep := func(ctx context.Context, step upgrade.Step) error {
+		if err := store.CheckMembers(ctx, step.Targets); err != nil {
+			return err
+		}
+		return adapter.CheckBeforeStep(ctx, step)
+	}
+	x := upgrade.Executor{Store: store, Operations: adapter, CheckBeforeStep: checkStep, ExecutorInstance: executor}
 	if resume != "" {
 		return x.Resume(ctx, resume, proof)
 	}
@@ -152,7 +158,11 @@ func RunDeploymentHost(ctx context.Context, mode, value string) (any, error) {
 }
 
 func deploymentCapacity(p upgrade.Plan) error {
-	if upgrade.ValidateCapacity(p) != nil {
+	return verifyDeploymentCapacity(p, upgrade.ValidateCapacity)
+}
+
+func verifyDeploymentCapacity(p upgrade.Plan, validate func(upgrade.Plan) error) error {
+	if validate(p) != nil {
 		return upgrade.ErrCapacity
 	}
 	c := *p.Inventory.Capacity

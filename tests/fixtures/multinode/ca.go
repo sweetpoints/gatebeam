@@ -23,7 +23,7 @@ import (
 const caOrigin = "https://ca.dual.test:8444"
 const caStatusOrigin = "http://ca.dual.test:8081"
 
-func (l *Lab) startCA(t testing.TB, root string, cert, key []byte) {
+func (l *Lab) startCA(t testing.TB, root string, cert, key []byte, clients []string) {
 	t.Helper()
 	l.CADirectory = root
 	l.CAContainer = l.Run + "-ca"
@@ -52,7 +52,6 @@ func (l *Lab) startCA(t testing.TB, root string, cert, key []byte) {
 		t.Fatal(err)
 	}
 	servers := []string{"management-api.dual.test", "service.dual.test"}
-	clients := []string{"gateway-a.dual.test", "gateway-b.dual.test"}
 	raw, err := json.Marshal(map[string]any{
 		"database_file": "/ca/runtime.dsn", "listen": "10.254.248.15:8444", "origin": caOrigin,
 		"status_listen": "10.254.248.15:8081", "status_origin": caStatusOrigin,

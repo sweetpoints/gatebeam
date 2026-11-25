@@ -38,7 +38,7 @@ func (s *Service) Submit(ctx context.Context, a ActorRef, f Filter) (Job, error)
 			if e != nil {
 				return e
 			}
-			if len(targets) == 0 || len(targets) > 2 {
+			if len(targets) == 0 || len(targets) > MaxLocalNodes {
 				return domain.ErrIncomplete
 			}
 		}

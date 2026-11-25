@@ -30,13 +30,19 @@ func TestCloudMutationBindsRequestAndPreservesOtherBackend(t *testing.T) {
 	}))
 	defer server.Close()
 	n := domain.NodeDeployment{Node: domain.NodeRef{ID: "11111111-1111-4111-8111-111111111111", Epoch: 1}, InstanceGroup: "projects/owned/zones/us-west1-c/instanceGroups/a", PublicBackend: "projects/owned/regions/us-west1/backendServices/public"}
-	step := upgrade.Step{ID: "33333333-3333-4333-8333-333333333333-001", Kind: "public-remove", Node: n.Node, Targets: []domain.NodeDeployment{n}}
+	other := domain.NodeDeployment{InstanceGroup: "projects/owned/zones/us-west1-c/instanceGroups/b"}
+	step := upgrade.Step{ID: "33333333-3333-4333-8333-333333333333-001", Kind: "public-remove", Node: n.Node, Targets: []domain.NodeDeployment{n, other}}
 	c := Cloud{Endpoint: server.URL, Client: server.Client(), Token: func(context.Context) (string, error) { return "owned", nil }}
 	if _, e := c.Mutate(t.Context(), step, n); e != nil {
 		t.Fatal(e)
 	}
 	if method != "PATCH" || !strings.HasSuffix(path, "/backendServices/public") || query != RequestID(step.ID) || patched["fingerprint"] != "owned" || len(patched["backends"].([]any)) != 1 {
 		t.Fatal("unsafe patch", patched, method, path, query)
+	}
+	method = ""
+	step.Targets[1].InstanceGroup = "projects/owned/zones/us-west1-c/instanceGroups/c"
+	if _, err := c.Mutate(t.Context(), step, n); err == nil || method != "" {
+		t.Fatal("backend membership drift allowed a write")
 	}
 }
 func TestRecoveryCannotUseArbitraryCloudOperation(t *testing.T) {

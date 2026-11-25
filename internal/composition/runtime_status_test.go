@@ -28,6 +28,10 @@ func TestRuntimeOverviewShowsIndependentPeerMaintenance(t *testing.T) {
 		body, _ := json.Marshal(overview)
 		t.Fatalf("independent role state hidden: %s", body)
 	}
+	cfg.HealthEndpoints["node-c"] = map[string]string{"nginx": dataServer.URL + "/status"}
+	if overview = readRuntimeOverview(t.Context(), cfg); len(overview.Nodes) != 3 || overview.Nodes[2].Node != "node-c" || !overview.Nodes[2].Roles[0].Available {
+		t.Fatal("third node is missing from fleet health")
+	}
 	cfg.HealthEndpoints = map[string]map[string]string{"node-a": {"management": "http://example.com/status"}}
 	if overview = readRuntimeOverview(context.Background(), cfg); overview.Nodes[0].Roles[0].Available {
 		t.Fatal("public health destination accepted")

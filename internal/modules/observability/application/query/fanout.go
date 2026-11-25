@@ -5,6 +5,9 @@ import (
 	"sort"
 )
 
+// MaxLocalNodes is the largest supported local query fan-out.
+const MaxLocalNodes = 32
+
 // NodePart reports one frozen source target. An unavailable local source is
 // missing coverage even when every reachable node returned an empty result.
 type NodePart struct {
@@ -17,7 +20,7 @@ type NodePart struct {
 func Merge(parts []NodePart, limit int) (rows []domain.QueryRow, coverage string, truncated bool) {
 	rows = []domain.QueryRow{}
 	coverage = "complete"
-	if len(parts) == 0 || len(parts) > 32 || limit < 1 || limit > domain.MaxQueryRows {
+	if len(parts) == 0 || len(parts) > MaxLocalNodes || limit < 1 || limit > domain.MaxQueryRows {
 		return rows, "incomplete", false
 	}
 	seen := map[string]bool{}

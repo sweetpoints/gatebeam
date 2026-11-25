@@ -140,40 +140,50 @@ func controlHandler(cfg bootstrap.Config, state *lifecycle.State) http.Handler {
 			http.Error(w, "invalid command", 400)
 			return
 		}
-		primary, e := netip.ParseAddrPort(cfg.ManagementAPIAddress)
+		primary, peer, additional, e := managementTargets(cfg)
 		if e != nil {
 			http.Error(w, "invalid target policy", 503)
 			return
 		}
-		peer, e := netip.ParseAddrPort(cfg.ManagementAPIPeerAddress)
-		if e != nil {
-			http.Error(w, "invalid target policy", 503)
-			return
-		}
-		saved, e := runtimebootstrap.UpdateManagementState(cfg.ManagementAPIStateFile, primary, peer, command.Address, *command.Unavailable)
+		saved, e := runtimebootstrap.UpdateManagementState(cfg.ManagementAPIStateFile, primary, peer, command.Address, *command.Unavailable, additional...)
 		if e != nil {
 			http.Error(w, "maintenance state unavailable", 503)
 			return
 		}
-		step, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-		defer cancel()
-		pool, e := postgres.Open(step, cfg)
-		if e != nil {
-			http.Error(w, "control unavailable", 503)
+		queueManagementConfiguration(w, r, cfg, saved)
+	})
+	mux.HandleFunc("POST /management-peers", func(w http.ResponseWriter, r *http.Request) {
+		if cfg.Mode != "edge" || cfg.RuntimeProtocol != 1 || cfg.ManagementAPIStateFile == "" || cfg.ManagementAPIName == "" {
+			http.NotFound(w, r)
 			return
 		}
-		defer pool.Close()
-		e = postgres.NewRunner(pool).Within(step, func(sc transaction.Scope) error {
-			_, e := jobs.New(pool).EnqueueTargetWithin(sc, "deployment.node.generation.v1", "management/"+saved.Digest(), json.RawMessage(`{"kind":"management"}`), jobs.ClaimTarget{NodeID: cfg.NodeID, Epoch: cfg.NodeEpoch})
-			return e
-		})
-		if e != nil {
-			http.Error(w, "control unavailable", 503)
+		var command struct {
+			Address string `json:"address"`
+		}
+		if decodeControl(w, r, &command) != nil || command.Address == "" {
+			http.Error(w, "invalid command", 400)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(202)
-		_ = json.NewEncoder(w).Encode(map[string]string{"desired_digest": saved.Digest()})
+		primary, peer, additional, err := managementTargets(cfg)
+		if err != nil {
+			http.Error(w, "invalid target policy", 503)
+			return
+		}
+		protected := make([]netip.Prefix, 0, len(cfg.ProtectedNetworks))
+		for _, raw := range cfg.ProtectedNetworks {
+			prefix, err := netip.ParsePrefix(raw)
+			if err != nil {
+				http.Error(w, "invalid protection policy", 503)
+				return
+			}
+			protected = append(protected, prefix)
+		}
+		saved, err := runtimebootstrap.RegisterManagementPeer(cfg.ManagementAPIStateFile, primary, peer, command.Address, protected, additional...)
+		if err != nil {
+			http.Error(w, "management endpoint cannot be staged", 409)
+			return
+		}
+		queueManagementConfiguration(w, r, cfg, saved)
 	})
 	mux.HandleFunc("POST /capabilities/verify", func(w http.ResponseWriter, r *http.Request) {
 		if cfg.Mode != "worker" || cfg.RuntimeProtocol != 1 || !state.Accepts(lifecycle.GlobalJobs) {
@@ -281,6 +291,30 @@ func controlHandler(cfg bootstrap.Config, state *lifecycle.State) http.Handler {
 	})
 	return mux
 }
+func queueManagementConfiguration(w http.ResponseWriter, r *http.Request, cfg bootstrap.Config, saved runtimebootstrap.ManagementState) {
+	step, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	pool, err := postgres.Open(step, cfg)
+	if err != nil {
+		http.Error(w, "control unavailable", 503)
+		return
+	}
+	defer pool.Close()
+	digest := saved.Digest()
+	err = postgres.NewRunner(pool).Within(step, func(sc transaction.Scope) error {
+		_, err := jobs.New(pool).EnqueueTargetWithin(sc, "deployment.node.generation.v1", "management/"+digest,
+			json.RawMessage(`{"kind":"management"}`), jobs.ClaimTarget{NodeID: cfg.NodeID, Epoch: cfg.NodeEpoch})
+		return err
+	})
+	if err != nil {
+		http.Error(w, "control unavailable", 503)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(202)
+	_ = json.NewEncoder(w).Encode(map[string]string{"desired_digest": digest})
+}
+
 func drainDuration(cfg bootstrap.Config) time.Duration {
 	seconds := cfg.DrainSeconds
 	if seconds == 0 {

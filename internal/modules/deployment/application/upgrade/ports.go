@@ -6,7 +6,7 @@ import (
 	"gatebeam/internal/modules/deployment/domain"
 )
 
-var ErrCapacity = errors.New("production single-node peak capacity qualification required for current and candidate artifacts")
+var ErrCapacity = errors.New("remaining healthy gateway capacity is insufficient or unverified")
 var ErrInvalid = errors.New("invalid upgrade intent or inventory")
 var ErrPaused = errors.New("upgrade paused; verified fencing and in-flight results required")
 var ErrFailed = errors.New("new version failed read-only verification")
@@ -38,6 +38,7 @@ type Operations interface {
 	VerifyRecovery(context.Context, RecoveryProof) error
 }
 type Run struct {
+	RestoreFrom   string        `json:"restore_from,omitempty"`
 	RecoverySteps []Step        `json:"recovery_steps,omitempty"`
 	RecoveryNode  string        `json:"recovery_node,omitempty"`
 	Plan          Plan          `json:"plan"`

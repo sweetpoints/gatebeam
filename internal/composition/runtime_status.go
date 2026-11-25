@@ -3,6 +3,7 @@ package composition
 import (
 	"context"
 	"encoding/json"
+	"gatebeam/internal/modules/deployment/domain"
 	"gatebeam/internal/platform/bootstrap"
 	"gatebeam/internal/platform/lifecycle"
 	"io"
@@ -34,7 +35,7 @@ func readRuntimeOverview(ctx context.Context, cfg bootstrap.Config) runtimeOverv
 		out.Snapshot = cfg.RuntimeState.Snapshot()
 		out.Details = nil
 	}
-	if len(cfg.HealthEndpoints) > 2 {
+	if len(cfg.HealthEndpoints) > domain.MaxFleetNodes {
 		return out
 	}
 	nodes := []string{}

@@ -27,7 +27,7 @@ func BuildPlan(r Request, i Inventory) (Plan, error) {
 	}
 	r, i = snapshot.Request, snapshot.Inventory
 	p := Plan{Request: r, Inventory: i, ID: r.BatchID, ExecutorInstance: r.ExecutorInstance, Scope: r.Scope}
-	if !(domain.NodeRef{ID: r.BatchID, Epoch: 1}).Valid() || len(i.Nodes) != 2 || !domain.CurrentRuntimeContract().SupportsVersions(i.Schema, i.RoleSchema) || !i.Compatible || !slices.Contains([]string{"node", "role", "host"}, r.Scope) {
+	if !(domain.NodeRef{ID: r.BatchID, Epoch: 1}).Valid() || domain.ValidateNodeInventory(i.Nodes) != nil || !domain.CurrentRuntimeContract().SupportsVersions(i.Schema, i.RoleSchema) || !i.Compatible || !slices.Contains([]string{"node", "role", "host", "retire"}, r.Scope) {
 		return p, ErrInvalid
 	}
 	executor := strings.Split(r.ExecutorInstance, "/")
@@ -37,8 +37,17 @@ func BuildPlan(r Request, i Inventory) (Plan, error) {
 	if r.Scope == "role" && !slices.Contains(domain.NodeRoleNames(), r.Role) || r.Scope != "role" && r.Role != "" {
 		return p, ErrInvalid
 	}
-	a, b := i.Nodes[0], i.Nodes[1]
-	if a.Validate() != nil || b.Validate() != nil || a.Node.ID == b.Node.ID || a.Instance == b.Instance || a.InstanceGroup == b.InstanceGroup || a.PrivateAddress != b.PeerAddress || b.PrivateAddress != a.PeerAddress || a.PublicBackend != b.PublicBackend || a.PrivateBackend != b.PrivateBackend || a.PublicBackend == a.PrivateBackend {
+	retiring := r.Scope == "retire"
+	if retiring && r.Target == nil || r.Target != nil && !slices.ContainsFunc(i.Nodes, func(n domain.NodeDeployment) bool { return n.Node == *r.Target }) {
+		return p, ErrInvalid
+	}
+	if len(i.Nodes) == 1 {
+		return p, ErrCapacity
+	}
+	first := i.Nodes[0]
+	// Existing pair manifests remain valid and must still bind each other.
+	if len(i.Nodes) == 2 && (first.PeerAddress != "" && first.PeerAddress != i.Nodes[1].PrivateAddress ||
+		i.Nodes[1].PeerAddress != "" && i.Nodes[1].PeerAddress != first.PrivateAddress) {
 		return p, ErrInvalid
 	}
 	zone := ""
@@ -71,9 +80,9 @@ func BuildPlan(r Request, i Inventory) (Plan, error) {
 		if !slices.Contains(domain.NodeRoleNames(), role) || r.Scope == "role" && role != r.Role {
 			return p, ErrInvalid
 		}
-		check := a
+		check := first
 		check.Roles = map[string]domain.RoleDeployment{}
-		for k, v := range a.Roles {
+		for k, v := range first.Roles {
 			check.Roles[k] = v
 		}
 		v := check.Roles[role]
@@ -83,22 +92,25 @@ func BuildPlan(r Request, i Inventory) (Plan, error) {
 			return p, ErrInvalid
 		}
 	}
-	if r.Scope != "host" && len(r.Images) == 0 || r.Scope == "host" && len(r.Images) != 0 {
+	if (r.Scope == "host" || retiring) != (len(r.Images) == 0) {
 		return p, ErrInvalid
 	}
 	add := func(kind string, n domain.NodeDeployment, images map[string]string, seconds int) {
-		p.Steps = append(p.Steps, Step{Capacity: i.Capacity, ID: fmt.Sprintf("%s-%03d", r.BatchID, len(p.Steps)), Kind: kind, Node: n.Node, Targets: []domain.NodeDeployment{a, b}, Images: images, Seconds: seconds})
+		p.Steps = append(p.Steps, Step{Capacity: i.Capacity, ID: fmt.Sprintf("%s-%03d", r.BatchID, len(p.Steps)), Kind: kind, Node: n.Node, Targets: i.Nodes, Images: images, Seconds: seconds})
 	}
-	add("precheck", a, r.Images, 0)
-	add("compatibility", a, nil, 0)
+	add("precheck", first, r.Images, 0)
+	add("compatibility", first, nil, 0)
 	for _, n := range i.Nodes {
+		if r.Target != nil && n.Node != *r.Target {
+			continue
+		}
 		changed := map[string]string{}
 		for role, image := range r.Images {
 			if n.Roles[role].Image != image {
 				changed[role] = image
 			}
 		}
-		if len(changed) == 0 && r.Scope != "host" {
+		if len(changed) == 0 && r.Scope != "host" && !retiring {
 			continue
 		}
 		add("management-remove", n, nil, 0)
@@ -106,6 +118,10 @@ func BuildPlan(r Request, i Inventory) (Plan, error) {
 		add("private-remove", n, nil, 0)
 		add("drain", n, changed, r.DrainSeconds)
 		add("log-flush", n, changed, 0)
+		if retiring {
+			add("retire-membership", n, nil, 0)
+			continue
+		}
 		if r.Scope == "host" {
 			add("host-stop", n, nil, 0)
 			add("host-start", n, nil, 0)

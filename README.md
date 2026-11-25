@@ -38,12 +38,12 @@ Deployment files have separate purposes:
 
 | File | Purpose |
 |---|---|
-| `compose.yaml` | Five runtime services per gateway node, using prebuilt images |
+| `compose.yaml` | Four gateway services per node, using prebuilt images |
 | `.env.example` | Example of the environment for one node, with image digests and node-specific settings |
 | `compose.dev.yaml` | Standalone disposable development database |
 
-Production uses two gateway VMs, with one independently managed Compose project
-per VM and shared external PostgreSQL through Cloud SQL. The two management
+The two-node production example uses one independently managed Compose project
+per VM and shared external PostgreSQL through Cloud SQL. All management
 replicas serve one logical console. Each gateway runs these roles:
 
 | Service | Responsibility |

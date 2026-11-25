@@ -284,6 +284,41 @@ func TestManagementPeerFallbackDoesNotReplayWrites(t *testing.T) {
 	client := edge.Material{CertificatePEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), KeyPEM: pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: key})}
 	m := r.Materials["entry"]
 	r.Management = &edge.ManagementTLS{Domain: "entry.test", APIAddress: netip.MustParseAddrPort("172.30.0.3:8444"), PeerAPIAddress: netip.MustParseAddrPort("172.30.0.4:8444"), CertificatePEM: m.CertificatePEM, KeyPEM: m.KeyPEM, TrustPEM: r.Materials["trust"].TrustPEM, UpstreamTLS: &edge.ManagementUpstreamTLS{ServerName: "entry.test", TrustPEM: r.Materials["trust"].TrustPEM, CertificatePEM: client.CertificatePEM, KeyPEM: client.KeyPEM}}
+	t.Run("single node keeps mutual TLS", func(t *testing.T) {
+		single := *r.Management
+		single.PeerAPIAddress = netip.AddrPort{}
+		state := r
+		state.Management = &single
+		artifact, err := (nginx.Compiler{}).Compile(app.Snapshot{Version: "single"}, state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		config := string(artifact.Files["nginx.conf"])
+		for _, expected := range []string{"server 172.30.0.3:8444", "proxy_ssl_verify on;", "proxy_ssl_certificate materials/management-upstream.pem;", "proxy_pass https://gatebeam_management;"} {
+			if !strings.Contains(config, expected) {
+				t.Fatalf("missing single-node management behavior %q", expected)
+			}
+		}
+		if strings.Contains(config, " backup;") || strings.Contains(config, "non_idempotent") {
+			t.Fatal("single-node control path introduced a backup or write replay")
+		}
+	})
+	t.Run("three nodes exclude a selected upstream", func(t *testing.T) {
+		cluster := *r.Management
+		third := netip.MustParseAddrPort("172.30.0.5:8444")
+		cluster.AdditionalAPIAddresses = []netip.AddrPort{third}
+		cluster.UnavailableAPIAddresses = []netip.AddrPort{cluster.PeerAPIAddress}
+		state := r
+		state.Management = &cluster
+		artifact, err := (nginx.Compiler{}).Compile(app.Snapshot{Version: "three"}, state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		config := string(artifact.Files["nginx.conf"])
+		if !strings.Contains(config, "server 172.30.0.3:8444 ") || !strings.Contains(config, "server 172.30.0.5:8444 backup ") || strings.Contains(config, "server 172.30.0.4:8444 ") {
+			t.Fatal("management route did not respect multi-node exclusion")
+		}
+	})
 	a, e := (nginx.Compiler{}).Compile(app.Snapshot{Version: "peer"}, r)
 	if e != nil {
 		t.Fatal(e)

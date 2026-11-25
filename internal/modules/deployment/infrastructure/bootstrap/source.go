@@ -16,6 +16,7 @@ import (
 	"io"
 	"net/netip"
 	"os"
+	"slices"
 	"time"
 )
 
@@ -33,6 +34,7 @@ type CloudflareBindings interface {
 }
 type Source struct {
 	UpstreamRenewedCertificateFile                                                                 string
+	AdditionalAPIAddresses                                                                         []netip.AddrPort
 	PeerAPIAddress                                                                                 netip.AddrPort
 	UpstreamName, UpstreamTrustFile, UpstreamCertificateFile, UpstreamKeyFile, ManagementStateFile string
 	ManagementACMEWebRoot, ManagementACMEHost                                                      string
@@ -83,7 +85,7 @@ func (s *Source) ReadWithin(sc transaction.Scope, snapshot app.Snapshot) (edge.R
 		return edge.RuntimeState{}, e
 	}
 	management := &edge.ManagementTLS{Domain: s.Domain, APIAddress: s.APIAddress, CertificatePEM: cert, KeyPEM: key, TrustPEM: trust}
-	if s.PeerAPIAddress.IsValid() {
+	if s.UpstreamName != "" || s.PeerAPIAddress.IsValid() || len(s.AdditionalAPIAddresses) > 0 {
 		upstreamTrust, e := read(s.UpstreamTrustFile)
 		if e != nil {
 			return edge.RuntimeState{}, e
@@ -104,16 +106,30 @@ func (s *Source) ReadWithin(sc transaction.Scope, snapshot app.Snapshot) (edge.R
 		}
 		management.PeerAPIAddress = s.PeerAPIAddress
 		management.UpstreamTLS = &edge.ManagementUpstreamTLS{ServerName: s.UpstreamName, TrustPEM: upstreamTrust, CertificatePEM: upstreamCert, KeyPEM: upstreamKey}
-		maintenance, e := ReadManagementState(s.ManagementStateFile, s.APIAddress, s.PeerAPIAddress)
+		maintenance, e := ReadManagementState(s.ManagementStateFile, s.APIAddress, s.PeerAPIAddress, s.AdditionalAPIAddresses...)
 		if e != nil {
 			return edge.RuntimeState{}, e
 		}
-		for _, address := range maintenance.Unavailable {
-			if address == s.APIAddress.String() {
-				management.APIUnavailable = true
+		management.AdditionalAPIAddresses = slices.Clone(s.AdditionalAPIAddresses)
+		for _, address := range maintenance.DynamicPeers {
+			peer, err := netip.ParseAddrPort(address)
+			if err != nil || !slices.ContainsFunc(s.ProtectedNetworks, func(prefix netip.Prefix) bool { return prefix.Contains(peer.Addr()) }) {
+				return edge.RuntimeState{}, domain.ErrInvalid
 			}
-			if address == s.PeerAPIAddress.String() {
+			management.AdditionalAPIAddresses = append(management.AdditionalAPIAddresses, peer)
+		}
+		for _, address := range maintenance.Unavailable {
+			switch address {
+			case s.APIAddress.String():
+				management.APIUnavailable = true
+			case s.PeerAPIAddress.String():
 				management.PeerUnavailable = true
+			default:
+				target, err := netip.ParseAddrPort(address)
+				if err != nil {
+					return edge.RuntimeState{}, err
+				}
+				management.UnavailableAPIAddresses = append(management.UnavailableAPIAddresses, target)
 			}
 		}
 		management.ConfigurationDigest = maintenance.Digest()
