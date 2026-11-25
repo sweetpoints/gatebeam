@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"gatebeam/internal/modules/deployment/domain"
 	"gatebeam/internal/platform/secrets"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -65,7 +66,7 @@ func TestNodeRenderUsesPeerVPCAndIndependentRecipients(t *testing.T) {
 	policy := secrets.RolePolicy{}
 	own := map[string]string{}
 	for _, role := range []string{"api", "provider", "notification", "ca", "leaf"} {
-		for i := 0; i < 2; i++ {
+		for i := 0; i < 3; i++ {
 			file := filepath.Join(root, role+string(rune('a'+i)))
 			if e = secrets.EnsureIdentity(file); e != nil {
 				t.Fatal(e)
@@ -92,7 +93,11 @@ func TestNodeRenderUsesPeerVPCAndIndependentRecipients(t *testing.T) {
 		r.ControlVolume = "gatebeam-a-" + name + "-control"
 		peer.Roles[name] = r
 	}
-	request := NodeRenderRequest{PeerNode: peer, Node: node, TemplatesDirectory: templates, OutputDirectory: out, Recipients: policy, NodeRecipients: own}
+	legacyPolicy := make(secrets.RolePolicy, len(policy))
+	for role, recipients := range policy {
+		legacyPolicy[role] = recipients[:2]
+	}
+	request := NodeRenderRequest{PeerNode: peer, Node: node, TemplatesDirectory: templates, OutputDirectory: out, Recipients: legacyPolicy, NodeRecipients: own}
 	if e = RenderNodeConfigs(context.Background(), request); e != nil {
 		t.Fatal(e)
 	}
@@ -131,4 +136,86 @@ func TestNodeRenderUsesPeerVPCAndIndependentRecipients(t *testing.T) {
 	if e = RenderNodeConfigs(context.Background(), request); e == nil {
 		t.Fatal("existing protected configuration overwritten")
 	}
+	t.Run("explicit three nodes", func(t *testing.T) {
+		local := node
+		local.PeerAddress = ""
+		local.EnvironmentFile = out + "-three.env"
+		local.Roles = maps.Clone(node.Roles)
+		for name, role := range local.Roles {
+			mode := modes[name]
+			role.ConfigFile = filepath.Join(out+"-three", mode, mode+".json")
+			local.Roles[name] = role
+		}
+		third := peer
+		third.Node.ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+		third.PrivateAddress, third.PeerAddress = "10.42.0.32", ""
+		third.Instance = "projects/owned/zones/us-west1-c/instances/gatebeam-c"
+		third.InstanceGroup = "projects/owned/zones/us-west1-c/instanceGroups/gatebeam-c"
+		third.StoragePrefix = "gatebeam-c"
+		third.Roles = maps.Clone(peer.Roles)
+		for name, role := range third.Roles {
+			role.ControlVolume = "gatebeam-c-" + name + "-control"
+			third.Roles[name] = role
+		}
+		req := request
+		req.Node, req.PeerNode = local, domain.NodeDeployment{}
+		req.Inventory = []domain.NodeDeployment{peer, local, third}
+		req.OutputDirectory, req.Recipients = out+"-three", policy
+		if err := RenderNodeConfigs(t.Context(), req); err != nil {
+			t.Fatal(err)
+		}
+		var config struct {
+			Peers     []string `json:"management_api_additional_addresses"`
+			Protected []string `json:"protected_networks"`
+		}
+		data, err := os.ReadFile(filepath.Join(req.OutputDirectory, "edge", "edge.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(data, &config); err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(config.Peers, []string{"10.42.0.30:9443", "10.42.0.32:9443"}) || !slices.Contains(config.Protected, "10.42.0.32/32") {
+			t.Fatalf("wrong peers or protected networks: %+v", config)
+		}
+	})
+	t.Run("explicit single node", func(t *testing.T) {
+		single := node
+		single.PeerAddress = ""
+		single.EnvironmentFile = out + "-single.env"
+		single.Roles = maps.Clone(node.Roles)
+		for name, role := range single.Roles {
+			mode := modes[name]
+			role.ConfigFile = filepath.Join(out+"-single", mode, mode+".json")
+			single.Roles[name] = role
+		}
+		singlePolicy := secrets.RolePolicy{}
+		for role, recipient := range own {
+			singlePolicy[role] = []string{recipient}
+		}
+		req := request
+		req.Node, req.PeerNode = single, domain.NodeDeployment{}
+		req.Inventory = []domain.NodeDeployment{single}
+		req.OutputDirectory, req.Recipients = out+"-single", singlePolicy
+		if err := RenderNodeConfigs(t.Context(), req); err != nil {
+			t.Fatal(err)
+		}
+		var config struct {
+			Name       string   `json:"management_api_name"`
+			Local      string   `json:"management_api_address"`
+			Peer       string   `json:"management_api_peer_address"`
+			Additional []string `json:"management_api_additional_addresses"`
+		}
+		raw, err := os.ReadFile(filepath.Join(req.OutputDirectory, "edge", "edge.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(raw, &config); err != nil {
+			t.Fatal(err)
+		}
+		if config.Name == "" || config.Local != "10.42.0.31:9443" || config.Peer != "" || len(config.Additional) != 0 {
+			t.Fatalf("single node must retain only its local mTLS API: %+v", config)
+		}
+	})
+
 }

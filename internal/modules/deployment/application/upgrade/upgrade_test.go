@@ -6,13 +6,18 @@ import (
 	"fmt"
 	"gatebeam/internal/modules/deployment/domain"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
 
-func fixture() (Request, Inventory) {
+func fixture() (Request, Inventory) { return fleetFixture(2) }
+
+func fleetFixture(count int) (Request, Inventory) {
 	nodes := []domain.NodeDeployment{}
-	for i, id := range []string{"11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"} {
+	for i := range count {
+		digit := fmt.Sprint(i + 1)
+		id := strings.Repeat(digit, 8) + "-" + strings.Repeat(digit, 4) + "-4" + strings.Repeat(digit, 3) + "-8" + strings.Repeat(digit, 3) + "-" + strings.Repeat(digit, 12)
 		name := fmt.Sprintf("gateway-%d", i)
 		own := fmt.Sprintf("10.1.0.%d", 10+i)
 		peer := fmt.Sprintf("10.1.0.%d", 11-i)
@@ -44,14 +49,51 @@ func TestDryRunPerformsZeroWrites(t *testing.T) {
 	}
 }
 
+func TestExplicitFleetUsesOneNodeAtATime(t *testing.T) {
+	request, inventory := fleetFixture(3)
+	for i := range inventory.Nodes {
+		inventory.Nodes[i].PeerAddress = ""
+	}
+	plan, err := BuildPlan(request, inventory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var visited []domain.NodeRef
+	var drained domain.NodeRef
+	for _, step := range plan.Steps {
+		switch step.Kind {
+		case "management-remove":
+			if drained.Valid() || len(step.Targets) != 3 {
+				t.Fatalf("unsafe drain: %+v", step)
+			}
+			drained = step.Node
+			visited = append(visited, step.Node)
+		case "observe":
+			if step.Node != drained {
+				t.Fatalf("observation does not match drained node: %+v", step)
+			}
+			drained = domain.NodeRef{}
+		}
+	}
+	want := []domain.NodeRef{inventory.Nodes[0].Node, inventory.Nodes[1].Node, inventory.Nodes[2].Node}
+	if !slices.Equal(visited, want) || drained.Valid() {
+		t.Fatalf("not a complete sequential plan: %v", visited)
+	}
+	inventory.Nodes = inventory.Nodes[:1]
+	if _, err := BuildPlan(request, inventory); !errors.Is(err, ErrCapacity) {
+		t.Fatalf("single-node deployment must be expanded before drain, got %v", err)
+	}
+}
+
 type fakeOps struct {
 	calls       []Step
 	fail        string
 	recoveryErr error
+	images      map[string]string
 }
 
 func (f *fakeOps) Observe(context.Context, string) (NodeState, error) {
-	return NodeState{Ready: true, ControlReady: true}, nil
+	return NodeState{Ready: true, ControlReady: true, Images: f.images}, nil
 }
 func (f *fakeOps) Apply(_ context.Context, s Step) (OperationRef, error) {
 	f.calls = append(f.calls, s)
@@ -223,5 +265,95 @@ func TestInputMutationCannotChangePersistedIntent(t *testing.T) {
 	i.Nodes[0].Roles["management"] = domain.RoleDeployment{}
 	if p.Request.Images["management"] == "changed" || p.Inventory.Nodes[0].Roles["management"] != old {
 		t.Fatal("caller mutated planned authority")
+	}
+}
+
+func TestCapacityDropPausesBeforeDispatchingDrain(t *testing.T) {
+	request, inventory := fixture()
+	plan, err := BuildPlan(request, inventory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewMemoryStore()
+	operations := &fakeOps{}
+	executor := Executor{Store: store, Operations: operations, ExecutorInstance: request.ExecutorInstance, CheckBeforeStep: func(_ context.Context, step Step) error {
+		if step.Kind == "management-remove" {
+			return ErrCapacity
+		}
+		return nil
+	}}
+	if err := executor.Run(t.Context(), plan); !errors.Is(err, ErrPaused) || !errors.Is(err, ErrCapacity) {
+		t.Fatalf("unsafe upgrade did not pause for capacity: %v", err)
+	}
+	run, err := store.Load(t.Context(), plan.ID)
+	if err != nil || run.Pending != nil || run.State != "paused" {
+		t.Fatalf("a read-only capacity check left an uncertain operation: %+v, %v", run, err)
+	}
+	for _, step := range operations.calls {
+		if step.Kind == "management-remove" || step.Kind == "public-remove" || step.Kind == "private-remove" {
+			t.Fatal("a drain was dispatched after capacity failed")
+		}
+	}
+}
+
+func TestRetirementDrainsExactlyTheSelectedNode(t *testing.T) {
+	request, inventory := fleetFixture(3)
+	request.Scope, request.Role, request.Images = "retire", "", nil
+	request.Target = &inventory.Nodes[2].Node
+	plan, err := BuildPlan(request, inventory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var effects []string
+	for _, step := range plan.Steps[2:] {
+		if step.Node != *request.Target {
+			t.Fatalf("retirement touched another node: %+v", step)
+		}
+		effects = append(effects, step.Kind)
+	}
+	want := []string{"management-remove", "public-remove", "private-remove", "drain", "log-flush", "retire-membership"}
+	if !slices.Equal(effects, want) {
+		t.Fatalf("retirement effects = %v, want %v", effects, want)
+	}
+}
+
+func TestCapacityLossRestoresConfirmedPartialDrain(t *testing.T) {
+	request, inventory := fixture()
+	plan, err := BuildPlan(request, inventory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewMemoryStore()
+	images := make(map[string]string)
+	for role, deployment := range inventory.Nodes[0].Roles {
+		images[role] = deployment.Image
+	}
+	ops := &fakeOps{images: images}
+	executor := Executor{Store: store, Operations: ops, ExecutorInstance: request.ExecutorInstance,
+		CheckBeforeStep: func(_ context.Context, step Step) error {
+			if step.Kind == "private-remove" {
+				return ErrCapacity
+			}
+			return nil
+		},
+	}
+	if err := executor.Run(t.Context(), plan); !errors.Is(err, ErrCapacity) || !errors.Is(err, ErrPaused) {
+		t.Fatalf("capacity loss returned %v", err)
+	}
+	var operations []string
+	for _, step := range ops.calls {
+		if step.Node != inventory.Nodes[0].Node {
+			t.Fatalf("another gateway was modified: %+v", step)
+		}
+		operations = append(operations, step.Kind)
+	}
+	want := []string{"precheck", "compatibility", "management-remove", "public-remove",
+		"verify-api", "management-restore", "verify-public", "public-add", "observe"}
+	if !slices.Equal(operations, want) {
+		t.Fatalf("got %v, want %v", operations, want)
+	}
+	batch, err := store.Load(t.Context(), plan.ID)
+	if err != nil || batch.State != "rolled_back" || batch.Pending != nil {
+		t.Fatalf("restoration not confirmed in journal: %+v, %v", batch, err)
 	}
 }

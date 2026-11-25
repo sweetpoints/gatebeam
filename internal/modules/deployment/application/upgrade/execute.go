@@ -9,6 +9,7 @@ import (
 type Executor struct {
 	Store            Store
 	Operations       Operations
+	CheckBeforeStep  func(context.Context, Step) error
 	ExecutorInstance string
 }
 
@@ -52,6 +53,14 @@ func (x *Executor) execute(ctx context.Context, r Run) error {
 				}
 			}
 		}
+		if x.CheckBeforeStep != nil {
+			if e := x.CheckBeforeStep(ctx, s); e != nil {
+				if errors.Is(e, ErrCapacity) && len(r.RecoverySteps) == 0 {
+					return x.restorePartialDrain(ctx, r, s)
+				}
+				return x.pause(ctx, &r, e)
+			}
+		}
 		r.Pending = &s
 		r.Operation = nil
 		if e := x.save(ctx, &r); e != nil {
@@ -87,6 +96,9 @@ func (x *Executor) execute(ctx context.Context, r Run) error {
 	}
 	e := x.save(ctx, &r)
 	if e == nil && r.State == "rolled_back" {
+		if r.RestoreFrom != "" {
+			return errors.Join(ErrPaused, ErrCapacity)
+		}
 		return ErrRolledBack
 	}
 	return e
@@ -117,6 +129,9 @@ func (x *Executor) Resume(ctx context.Context, id string, proof RecoveryProof) e
 	}
 	if len(r.RecoverySteps) > 0 {
 		expected, e := Compensation(r.Plan, r.RecoveryNode)
+		if r.RestoreFrom != "" {
+			expected, e = DrainRestoration(r.Plan, r.RestoreFrom)
+		}
 		if e != nil || !reflect.DeepEqual(expected, r.RecoverySteps) {
 			return ErrInvalid
 		}
@@ -171,6 +186,34 @@ func (x *Executor) compensate(ctx context.Context, r Run, node string) error {
 	r.State = "running"
 	if e = x.save(ctx, &r); e != nil {
 		return errors.Join(ErrPaused, e)
+	}
+	return x.execute(ctx, r)
+}
+
+func (x *Executor) restorePartialDrain(ctx context.Context, r Run, blocked Step) error {
+	steps, err := DrainRestoration(r.Plan, blocked.ID)
+	if err != nil {
+		return x.pause(ctx, &r, ErrCapacity)
+	}
+	target, err := x.Operations.Observe(ctx, blocked.Node.ID)
+	if err != nil || !target.Ready || !target.ControlReady {
+		return x.pause(ctx, &r, errors.Join(ErrCapacity, err))
+	}
+	for _, node := range blocked.Targets {
+		if node.Node != blocked.Node {
+			continue
+		}
+		for role, deployment := range node.Roles {
+			if target.Images[role] != deployment.Image {
+				return x.pause(ctx, &r, ErrCapacity)
+			}
+		}
+	}
+	r.RestoreFrom = blocked.ID
+	r.RecoverySteps = steps
+	r.Next = 0
+	if err := x.save(ctx, &r); err != nil {
+		return errors.Join(ErrPaused, ErrCapacity, err)
 	}
 	return x.execute(ctx, r)
 }

@@ -410,3 +410,174 @@ func TestExecutorProcessInterruptionAndRejectedVersion(t *testing.T) {
 	}
 	t.Log("real child stayed alive/rejected takeover, exited77 after container update before receipt, parent verified actual effect and resumed; rejected image restored A only; B retained")
 }
+
+func TestThreeNodesPublishAndRollWithoutLosingNewRequests(t *testing.T) {
+	lab := fixture.StartThree(t)
+	business := lab.Business(t)
+	ops := fixture.NewUpgradeOperations(t, lab)
+	image := ownedImage(t, lab, false)
+	digest := "registry.example/gatebeam/api@" + fixture.Docker(t, "image", "inspect", image, "--format", "{{.Id}}")
+	ops.Images[digest] = image
+	executor := "projects/owned/zones/us-west1-c/instances/fleet-maintenance"
+	plan := upgradePlan(t, lab, "88888888-8888-4888-8888-888888888888", executor, "role", digest)
+	initial := make(map[string]string, len(lab.Nodes))
+	for _, node := range lab.Nodes {
+		initial[node.Info.Node.ID] = node.Compose(t, "ps", "-q", "management")
+	}
+	var active atomic.Int32
+	var requests, failures atomic.Int64
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ctx.Err() == nil {
+			node := lab.Nodes[active.Load()]
+			response, err := business.Clients[node.Info.Node.ID].Get("https://service.dual.test/")
+			requests.Add(1)
+			if err != nil {
+				failures.Add(1)
+			} else {
+				body, readErr := io.ReadAll(io.LimitReader(response.Body, 1024))
+				response.Body.Close()
+				if readErr != nil || response.StatusCode != http.StatusOK || string(body) != "owned-business" {
+					failures.Add(1)
+				}
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	var drained int
+	ops.AfterApply = func(step upgrade.Step) {
+		if step.Kind != "public-remove" {
+			return
+		}
+		if drained >= len(lab.Nodes) || step.Node != lab.Nodes[drained].Info.Node {
+			t.Fatalf("unexpected drain order at step %s", step.ID)
+		}
+		survivors := 0
+		for i, node := range lab.Nodes {
+			if ops.Public[node.Info.Node.ID] {
+				survivors++
+				active.Store(int32(i))
+			}
+		}
+		if survivors != 2 {
+			t.Fatalf("expected two serving nodes during a drain, got %d", survivors)
+		}
+		drained++
+	}
+	run := upgrade.Executor{Store: ops.Store, Operations: ops, ExecutorInstance: executor}
+	if err := run.Run(t.Context(), plan); err != nil {
+		if batch, loadErr := ops.Store.Load(t.Context(), plan.ID); loadErr == nil && batch.Next < len(plan.Steps) {
+			t.Logf("fleet upgrade stopped at %s after %d drains", plan.Steps[batch.Next].Kind, drained)
+		}
+		t.Fatal(err)
+	}
+	cancel()
+	<-done
+	if drained != 3 || requests.Load() < 5 || failures.Load() != 0 {
+		t.Fatalf("three-node rollout ended with %d drains, %d requests, %d failures", drained, requests.Load(), failures.Load())
+	}
+	for _, node := range lab.Nodes {
+		if initial[node.Info.Node.ID] == node.Compose(t, "ps", "-q", "management") || !ops.Public[node.Info.Node.ID] || !ops.Private[node.Info.Node.ID] {
+			t.Fatalf("node %s was not replaced and restored", node.Info.Node.ID)
+		}
+	}
+	t.Logf("three management containers replaced in sequence, %d new TLS requests succeeded", requests.Load())
+}
+
+func TestTemporarySecondNodeCarriesTrafficDuringOriginalUpgrade(t *testing.T) {
+	lab := fixture.StartWithTemporaryNode(t)
+	business := lab.Business(t)
+	original, temporary := lab.Nodes[0], lab.Nodes[1]
+	if code := business.Get(t, temporary, "/"); code != http.StatusOK {
+		t.Fatalf("temporary node did not catch up to the existing release: %d", code)
+	}
+	ops := fixture.NewUpgradeOperations(t, lab)
+	if original.Configs["nginx"].ManagementAPIPeerAddress != "" || len(original.Configs["nginx"].ManagementAPIAdditionalAddresses) != 0 {
+		t.Fatal("temporary peer was unexpectedly preconfigured")
+	}
+	ops.EnableNewManagementPeer(t, original, temporary)
+	executor := "projects/owned/zones/us-west1-c/instances/temporary-node-maintenance"
+	maintenance := upgradePlan(t, lab, "77777777-7777-4777-8777-777777777777", executor, "host", "")
+	request := maintenance.Request
+	request.Target = &original.Info.Node
+	maintenance, err := upgrade.BuildPlan(request, maintenance.Inventory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.BatchID = "99999999-9999-4999-8999-999999999999"
+	request.Scope = "retire"
+	request.Target = &temporary.Info.Node
+	retirement, err := upgrade.BuildPlan(request, maintenance.Inventory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := original
+	observed := 0
+	ops.AfterApply = func(step upgrade.Step) {
+		if step.Kind == "public-remove" {
+			if step.Node == original.Info.Node {
+				active = temporary
+			} else {
+				active = original
+			}
+		}
+		if !ops.Public[active.Info.Node.ID] || business.Get(t, active, "/") != http.StatusOK {
+			t.Fatalf("business not served during %s", step.Kind)
+		}
+		observed++
+	}
+	runner := upgrade.Executor{Store: ops.Store, Operations: ops, ExecutorInstance: executor}
+	for _, plan := range []upgrade.Plan{maintenance, retirement} {
+		if err := runner.Run(t.Context(), plan); err != nil {
+			if batch, loadErr := ops.Store.Load(t.Context(), plan.ID); loadErr == nil && batch.Next < len(plan.Steps) {
+				t.Logf("transition paused at %s", plan.Steps[batch.Next].Kind)
+			}
+			t.Fatal(err)
+		}
+	}
+	if err := ops.Store.CheckMembers(t.Context(), maintenance.Inventory.Nodes[:1]); err != nil ||
+		!ops.Public[original.Info.Node.ID] || ops.Public[temporary.Info.Node.ID] || ops.Private[temporary.Info.Node.ID] || observed == 0 {
+		t.Fatalf("transition did not return to one serving gateway: %v", err)
+	}
+	t.Logf("temporary gateway joined an existing release and carried new traffic during original gateway maintenance; %d step probes passed", observed)
+}
+
+func TestCapacityLossReattachesGatewayBeforeDrain(t *testing.T) {
+	lab := fixture.Start(t)
+	business := lab.Business(t)
+	ops := fixture.NewUpgradeOperations(t, lab)
+	executor := "projects/owned/zones/us-west1-c/instances/capacity-recovery"
+	plan := upgradePlan(t, lab, "abababab-abab-4bab-8bab-abababababab", executor, "host", "")
+	target := lab.Nodes[0]
+	before := target.Compose(t, "ps", "-q", "nginx")
+	run := upgrade.Executor{Store: ops.Store, Operations: ops, ExecutorInstance: executor,
+		CheckBeforeStep: func(_ context.Context, step upgrade.Step) error {
+			if step.Kind == "private-remove" {
+				if ops.Public[target.Info.Node.ID] || !ops.Private[target.Info.Node.ID] {
+					t.Fatal("the test did not reach a confirmed partial removal")
+				}
+				return upgrade.ErrCapacity
+			}
+			return nil
+		}}
+	if err := run.Run(t.Context(), plan); !errors.Is(err, upgrade.ErrCapacity) || !errors.Is(err, upgrade.ErrPaused) {
+		t.Fatal(err)
+	}
+	for _, step := range ops.Calls {
+		if step.Kind == "drain" || step.Kind == "host-stop" || step.Node != target.Info.Node {
+			t.Fatalf("capacity failure continued maintenance: %+v", step)
+		}
+	}
+	batch, err := ops.Store.Load(t.Context(), plan.ID)
+	if err != nil || batch.State != "rolled_back" || !ops.Public[target.Info.Node.ID] ||
+		!ops.Private[target.Info.Node.ID] || before != target.Compose(t, "ps", "-q", "nginx") ||
+		business.Get(t, target, "/") != http.StatusOK {
+		t.Fatalf("original gateway was not restored: %v", err)
+	}
+}

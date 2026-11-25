@@ -17,7 +17,7 @@ func (s *Store) PrepareLocalWithin(sc transaction.Scope, job query.Job, targets 
 		if e != nil {
 			return e
 		}
-		if in.Filter.Source != "local" || len(targets) == 0 || len(targets) > 2 {
+		if in.Filter.Source != "local" || len(targets) == 0 || len(targets) > query.MaxLocalNodes {
 			return domain.ErrInvalid
 		}
 		seen := map[string]bool{}

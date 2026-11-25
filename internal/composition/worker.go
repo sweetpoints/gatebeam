@@ -18,6 +18,33 @@ import (
 	"time"
 )
 
+// managementTargets reads only the endpoints from the protected role configuration.
+func managementTargets(cfg bootstrap.Config) (primary, peer netip.AddrPort, additional []netip.AddrPort, err error) {
+	primary, err = netip.ParseAddrPort(cfg.ManagementAPIAddress)
+	if err != nil || !primary.Addr().IsPrivate() || primary.Port() == 0 {
+		return primary, peer, nil, errors.New("invalid private management API address")
+	}
+	seen := map[netip.AddrPort]bool{primary: true}
+	addresses := cfg.ManagementAPIAdditionalAddresses
+	legacyPeer := cfg.ManagementAPIPeerAddress != ""
+	if legacyPeer {
+		addresses = append([]string{cfg.ManagementAPIPeerAddress}, addresses...)
+	}
+	for i, raw := range addresses {
+		address, e := netip.ParseAddrPort(raw)
+		if e != nil || !address.Addr().IsPrivate() || address.Port() == 0 || seen[address] {
+			return primary, peer, nil, errors.New("invalid peer management API address")
+		}
+		seen[address] = true
+		if i == 0 && legacyPeer {
+			peer = address
+		} else {
+			additional = append(additional, address)
+		}
+	}
+	return primary, peer, additional, nil
+}
+
 // runtimeProtected is process-owned configuration, never a request override.
 func runtimeProtected(cfg bootstrap.Config) ([]netip.Prefix, error) {
 	address := cfg.ManagementAPIAddress
@@ -29,7 +56,7 @@ func runtimeProtected(cfg bootstrap.Config) ([]netip.Prefix, error) {
 		return nil, errors.New("invalid private management API address")
 	}
 	out := []netip.Prefix{netip.PrefixFrom(api.Addr(), api.Addr().BitLen())}
-	for _, raw := range []string{cfg.ManagementAPIPeerAddress, cfg.HealthListen} {
+	for _, raw := range append([]string{cfg.ManagementAPIPeerAddress, cfg.HealthListen}, cfg.ManagementAPIAdditionalAddresses...) {
 		if raw == "" {
 			continue
 		}

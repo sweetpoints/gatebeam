@@ -15,7 +15,7 @@ def load(path):
     return json.loads(p.read_bytes())
 manifest,nodes,budget=map(load,sys.argv[1:])
 if nodes!=load(root/'tests/fixtures/multinode/config.json'):
-    raise SystemExit('only the explicit isolated two-project fixture is supported; no production hosts')
+    raise SystemExit('only the explicit isolated multinode fixture is supported; no production hosts')
 if budget!=load(root/'tests/fixtures/multinode/budget.json'):
     raise SystemExit('fixture resource budget changed; review the maintained budget separately')
 roles=['edge','api','worker','ca','query']

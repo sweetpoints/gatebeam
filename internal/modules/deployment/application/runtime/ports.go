@@ -125,6 +125,8 @@ type ManagementUpstreamTLS struct {
 	TrustPEM, CertificatePEM, KeyPEM []byte
 }
 type ManagementTLS struct {
+	AdditionalAPIAddresses           []netip.AddrPort `json:",omitempty"`
+	UnavailableAPIAddresses          []netip.AddrPort `json:",omitempty"`
 	ConfigurationDigest              string
 	PeerAPIAddress                   netip.AddrPort
 	APIUnavailable, PeerUnavailable  bool

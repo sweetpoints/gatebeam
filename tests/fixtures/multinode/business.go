@@ -46,15 +46,8 @@ func (l *Lab) Session(t testing.TB) *Session {
 	if e != nil {
 		t.Fatal(e)
 	}
-	var pubs []string
-	for _, n := range l.Nodes {
-		key, e := secrets.New(filepath.Join(n.Secrets["management"], "identity.agekey"))
-		if e != nil {
-			t.Fatal(e)
-		}
-		pubs = append(pubs, key.Recipient())
-	}
-	store, e := secrets.NewRoleStore(filepath.Join(l.Nodes[0].Secrets["management"], "identity.agekey"), pubs)
+	first := l.Nodes[0]
+	store, e := secrets.NewRoleStore(filepath.Join(first.Secrets["management"], "identity.agekey"), first.Configs["management"].EncryptionRecipients.Role("api"))
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -240,7 +233,7 @@ func (l *Lab) Business(t testing.TB) *Business {
 	statuses := make(map[string]int, len(l.Nodes))
 	for preparation.Err() == nil && time.Now().Before(deadline) {
 		// A canary request can pass before the authority transaction commits.
-		// Fault injection starts only after both native confirmations and the
+		// Fault injection starts only after all native confirmations and the
 		// cluster release receipt, never from a transient candidate load.
 		if err := l.Pool.QueryRow(preparation, `SELECT state,(SELECT count(*) FROM deployment_node_runtime WHERE release_id=$1 AND body->>'state'='succeeded') FROM deployment_releases WHERE id=$1`, candidate.ID).Scan(&releaseState, &confirmedNodes); err != nil {
 			if preparation.Err() != nil {
@@ -248,7 +241,7 @@ func (l *Lab) Business(t testing.TB) *Business {
 			}
 			t.Fatal(err)
 		}
-		if releaseState != "succeeded" || confirmedNodes != 2 {
+		if releaseState != "succeeded" || confirmedNodes != len(l.Nodes) {
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}

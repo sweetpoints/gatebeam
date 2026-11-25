@@ -12,29 +12,45 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 )
 
 type NodeRenderRequest struct {
-	Node               domain.NodeDeployment `json:"node"`
-	PeerNode           domain.NodeDeployment `json:"peer_node"`
-	TemplatesDirectory string                `json:"templates_directory"`
-	OutputDirectory    string                `json:"output_directory"`
-	Recipients         secrets.RolePolicy    `json:"recipients"`
-	NodeRecipients     map[string]string     `json:"node_recipients"`
-	BackupRecipient    string                `json:"backup_recipient,omitempty"`
-	BackupEpoch        string                `json:"backup_epoch,omitempty"`
+	Inventory          []domain.NodeDeployment `json:"nodes,omitempty"`
+	Node               domain.NodeDeployment   `json:"node"`
+	PeerNode           domain.NodeDeployment   `json:"peer_node"`
+	TemplatesDirectory string                  `json:"templates_directory"`
+	OutputDirectory    string                  `json:"output_directory"`
+	Recipients         secrets.RolePolicy      `json:"recipients"`
+	NodeRecipients     map[string]string       `json:"node_recipients"`
+	BackupRecipient    string                  `json:"backup_recipient,omitempty"`
+	BackupEpoch        string                  `json:"backup_epoch,omitempty"`
 }
 
 // RenderNodeConfigs only creates a fresh protected configuration tree. It never
 // copies identities, opens DB secrets or overwrites an initialized node.
 func RenderNodeConfigs(ctx context.Context, r NodeRenderRequest) error {
-	if r.Node.Validate() != nil || r.PeerNode.Validate() != nil || r.Node.Node.ID == r.PeerNode.Node.ID || r.Node.PrivateAddress != r.PeerNode.PeerAddress || r.Node.PeerAddress != r.PeerNode.PrivateAddress || r.Node.EnvironmentFile != r.OutputDirectory+".env" || secrets.ValidateRoleRecipients(r.Recipients) != nil || !filepath.IsAbs(r.OutputDirectory) || filepath.Clean(r.OutputDirectory) != r.OutputDirectory {
+	inventory := r.Inventory
+	legacy := inventory == nil
+	if legacy {
+		if r.Node.PrivateAddress != r.PeerNode.PeerAddress || r.Node.PeerAddress != r.PeerNode.PrivateAddress {
+			return errors.New("invalid legacy peer binding")
+		}
+		inventory = []domain.NodeDeployment{r.Node, r.PeerNode}
+	} else if !reflect.DeepEqual(r.PeerNode, domain.NodeDeployment{}) {
+		return errors.New("both node inventory and legacy peer supplied")
+	}
+	if domain.ValidateNodeInventory(inventory) != nil || r.Node.EnvironmentFile != r.OutputDirectory+".env" || secrets.ValidateRoleRecipients(r.Recipients) != nil || !filepath.IsAbs(r.OutputDirectory) || filepath.Clean(r.OutputDirectory) != r.OutputDirectory {
 		return errors.New("invalid protected render inputs")
 	}
+	if !slices.ContainsFunc(inventory, func(n domain.NodeDeployment) bool { return reflect.DeepEqual(n, r.Node) }) {
+		return errors.New("render target does not match node inventory")
+	}
+
 	for _, role := range []string{"api", "provider", "notification", "leaf"} {
-		if len(r.Recipients[role]) < 2 || !slices.Contains(r.Recipients[role], r.NodeRecipients[role]) {
+		if len(r.Recipients[role]) < len(inventory) || !slices.Contains(r.Recipients[role], r.NodeRecipients[role]) {
 			return errors.New("independent own recipient required for every role")
 		}
 	}
@@ -52,7 +68,7 @@ func RenderNodeConfigs(ctx context.Context, r NodeRenderRequest) error {
 	templates := map[string]roleTemplate{"nginx": {"edge", "edge/edge.example.json", "172.31.0.2"}, "management": {"api", "edge/api.example.json", "172.31.0.3"}, "background-jobs": {"worker", "edge/worker.example.json", "172.31.0.5"}, "log-query": {"query", "query/query.example.json", "172.29.0.2"}}
 	configs := map[string][]byte{}
 	health := map[string]map[string]string{}
-	for _, node := range []domain.NodeDeployment{r.Node, r.PeerNode} {
+	for _, node := range inventory {
 		health[node.Node.ID] = map[string]string{}
 		for role, value := range node.Roles {
 			health[node.Node.ID][role] = "http://" + net.JoinHostPort(node.PrivateAddress, fmt.Sprint(value.HealthPort))
@@ -90,7 +106,17 @@ func RenderNodeConfigs(ctx context.Context, r NodeRenderRequest) error {
 		switch name {
 		case "nginx":
 			c.ManagementAPIAddress = net.JoinHostPort(r.Node.PrivateAddress, "9443")
-			c.ManagementAPIPeerAddress = net.JoinHostPort(r.Node.PeerAddress, "9443")
+			c.ManagementAPIPeerAddress = ""
+			c.ManagementAPIAdditionalAddresses = nil
+			if legacy {
+				c.ManagementAPIPeerAddress = net.JoinHostPort(r.Node.PeerAddress, "9443")
+			} else {
+				for _, other := range inventory {
+					if other.Node.ID != r.Node.Node.ID {
+						c.ManagementAPIAdditionalAddresses = append(c.ManagementAPIAdditionalAddresses, net.JoinHostPort(other.PrivateAddress, "9443"))
+					}
+				}
+			}
 		case "management":
 			c.HealthEndpoints = health
 			c.ManagementAddress = net.JoinHostPort(r.Node.PrivateAddress, "443")
@@ -104,8 +130,8 @@ func RenderNodeConfigs(ctx context.Context, r NodeRenderRequest) error {
 			c.CARecipient = ""
 		}
 		if name != "log-query" {
-			for _, address := range []string{r.Node.PrivateAddress, r.Node.PeerAddress} {
-				prefix := hostPrefix(address)
+			for _, tracked := range inventory {
+				prefix := hostPrefix(tracked.PrivateAddress)
 				if !slices.Contains(c.ProtectedNetworks, prefix) {
 					c.ProtectedNetworks = append(c.ProtectedNetworks, prefix)
 				}

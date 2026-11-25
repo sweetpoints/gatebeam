@@ -25,6 +25,7 @@ type UpgradeRequest struct {
 	ExecutorInstance string            `json:"executor_instance"`
 	Scope            string            `json:"scope"`
 	Role             string            `json:"role,omitempty"`
+	Target           *NodeRef          `json:"target,omitempty"`
 	Images           map[string]string `json:"images,omitempty"`
 	DrainSeconds     int               `json:"drain_seconds,omitempty"`
 	ObserveSeconds   int               `json:"observe_seconds,omitempty"`

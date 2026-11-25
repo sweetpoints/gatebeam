@@ -1,6 +1,14 @@
 # Gatebeam 双实例部署与升级
 
-这是部署输入及执行手册，不是已部署记录。生产运行模型是同一个 GCP 可用区内两台独立网关 VM，每台一个独立 Compose project，均运行 `nginx`、`management`、`background-jobs`、`log-query`。PostgreSQL 是外部 Cloud SQL 依赖，生产 Compose 不包含数据库。独立部署 [Gatebeam CA](../../gatebeam-ca/README.md)，为它配置单独的 PostgreSQL 数据库和账号。网关通过内网 DNS 访问 CA 的 ACME、OCSP 和 CRL 地址。本文中的项目名、域名、地址、资源引用和 digest 必须替换并核对；示例没有创建或保留任何云资源。
+这是部署输入及执行手册，不是已部署记录。部署示例使用同一个 GCP 可用区内两台独立网关 VM，每台一个独立 Compose project，均运行 `nginx`、`management`、`background-jobs`、`log-query`。PostgreSQL 是外部 Cloud SQL 依赖，生产 Compose 不包含数据库。独立部署 [Gatebeam CA](../../gatebeam-ca/README.md)，为它配置单独的 PostgreSQL 数据库和账号。网关通过内网 DNS 访问 CA 的 ACME、OCSP 和 CRL 地址。本文中的项目名、域名、地址、资源引用和 digest 必须替换并核对；示例没有创建或保留任何云资源。
+
+## 显式节点清单
+
+`render-node` 可用 `nodes` 提供完整清单，并用 `node` 指定要渲染的本机记录。清单至少有一台，受每角色 32 个 age 收件人的现有上限约束。旧双节点输入仍可用 `peer_node`。每个节点先配置计划中的内网管理上游和保护网段，再用 `activate-nodes` 提交全部已就绪节点。该命令只添加成员。新节点须实际加载当前发布，之后才能参与接流量。扩容前在 Nginx、管理 API 和后台任务的 `protected_networks` 配置中预防性保护专用网关子网。新增节点的 IP 可以在该子网内临时分配。对各现有 Nginx 的受控 Unix socket 执行 `POST /management-peers`，请求体为 `{"address":"10.42.0.32:9443"}`，等待实际加载返回的 `desired_digest`。新上游初始处于排除状态。新节点通过本机配置、mTLS 和实际能力验证并激活后，执行 `POST /management-upstreams`，请求体附同一 `address` 及 `"unavailable":false`，再次确认实际加载摘要。新增地址若超出现有保护子网，先按受控部署流程同步三类角色的保护策略。
+
+升级清单包含当时的全部节点，顺序就是升级顺序。请求可用 `target` 指定单台节点的 ID 和代次。只有一台时，先加入临时节点再开始整机维护。退出使用 `scope:retire` 和 `target`，从管理上游、公网及私网入口摘流并完成日志收尾后，撤销目标节点的成员资格。保留盘和历史日志按现有运维流程处理。升级和退出批次会阻止常规节点登记或激活改变成员清单。
+
+生产容量报告继续记录每台节点当时的镜像、机型和资源限制。新清单的容量报告需提供 `expires_at`。若需要多台共同承接峰值，在 `groups` 中记录经同一入口实测的组合及负载指标。每个成员记录 `node` 和 `images`，与单机记录对应。升级器检查每次摘流后实际存活的组合与测量证据，并在生成在途操作前暂停不满足门槛的摘流。生产验收仍需要实际 GCP 入口及业务负载。 在开始排空前，若剩余容量下降且原节点仍以清单中的镜像健康运行，执行器会重新验证并按已确认的摘流记录恢复原节点。恢复成功后批次记为回退并停止。既有请求 ID 和批次日志保留，下一次尝试使用新批次。排空已开始、原节点镜像或健康状态不符，以及操作结果未知时，批次暂停并保留证据。
 
 ## 服务及入口
 
@@ -99,9 +107,9 @@ Cloudflare DNS 仍由管理员手工切换，可保留两条入口记录，让�
 
 实际预检还会在无网络、只读文件系统、无秘密/持久卷、cap-drop-ALL 的一次性容器中调用当前与候选固定镜像的 `gatebeam --runtime-contract`。输出必须声明本次 schema/角色迁移范围、runtime protocol 1、boot format 1 和 configuration format 2；不能仅凭 inventory 的兼容性确认绕过。该命令在读取任何配置之前返回编译清单。缺少该命令或不满足契约的镜像会被预检拒绝。
 
-实际云端执行还必须提供单节点峰值资格记录。可在 intent 增加 `capacity_report_file` 指向受保护 JSON；其内容为 `kind:production`、真实 `required_peak_rps` 和 `trials`。每份 trial 绑定 `node{id,epoch}`、完整 GCP `machine_type` 资源名、四个角色的精确 `images`、每角色 `limits{memory_bytes,nano_cpus,pids}`、`duration_seconds`、`requests`、`errors`、`p95_millis` 和实际 `workload` 描述。两节点的当前及候选镜像组合均须覆盖；相同组合可复用同一 trial。每份至少 10 秒、零错误，测得成功率须达到声明峰值。工具固化规范化内容摘要，并在云端重新核对 VM 类型、宿主实际容器资源限制和固定镜像。该记录必须来自可信的实际测量及人工核对，工具不会凭一个“兼容”确认推断真实业务峰值。没有记录时仍可查看 dry-run 计划，但实际执行会在读取 DB 配置/进行云操作之前被拒绝。
+实际云端执行还必须提供容量资格记录。可在 intent 增加 `capacity_report_file` 指向受保护 JSON；其内容为 `kind:production`、真实 `required_peak_rps` 和 `trials`。每份 trial 绑定 `node{id,epoch}`、完整 GCP `machine_type` 资源名、四个角色的精确 `images`、每角色 `limits{memory_bytes,nano_cpus,pids}`、`duration_seconds`、`requests`、`errors`、`p95_millis` 和实际 `workload` 描述。各节点的当前及候选镜像组合均须覆盖，相同组合可复用同一 trial。每份至少 10 秒且零错误。每次摘流后由已测的单机或已测的组合承担声明峰值。工具固化规范化内容摘要，并在云端重新核对 VM 类型、宿主实际容器资源限制和固定镜像。该记录必须来自可信的实际测量及人工核对，工具不会凭一个“兼容”确认推断真实业务峰值。没有记录时仍可查看 dry-run 计划，但实际执行会在读取 DB 配置/进行云操作之前被拒绝。
 
-本地完整双节点关卡为：`sh scripts/check-multinode.sh --manifest .work/artifacts/manifest.json --nodes tests/fixtures/multinode/config.json --budget tests/fixtures/multinode/budget.json`。先执行 `sh scripts/build-system.sh` 取得五个固定预构建镜像及 manifest；关卡核对真实镜像 ID、二进制摘要、离线契约和不变资源预算，不用替换二进制绕过最终镜像。可用 `--suite runtime|control|upgrade|capacity` 单独运行；每个场景拥有独立外部测试 PG，使用统一数据库批次的300秒整包累计保护（命令315秒），由完整验收执行器运行时，10个场景仍共享600秒阶段保护；这些是 CI 总钟，明确的请求、故障、续期及查询功能期限和角色资源预算保留，缺场景不能以“无测试”通过。节点输入仅接受维护中的隔离双 Compose 模板，不接受生产主机。辅助 S3 使用固定 RustFS 测试镜像及一次性凭据，不代表已验收 Cloudflare IAM。
+本地完整双节点关卡为：`sh scripts/check-multinode.sh --manifest .work/artifacts/manifest.json --nodes tests/fixtures/multinode/config.json --budget tests/fixtures/multinode/budget.json`。先执行 `sh scripts/build-system.sh` 取得五个固定预构建镜像及 manifest；关卡核对真实镜像 ID、二进制摘要、离线契约和不变资源预算，不用替换二进制绕过最终镜像。可用 `--suite runtime|control|upgrade|capacity|inventory` 单独运行；每个场景拥有独立外部测试 PG，使用统一数据库批次的300秒整包累计保护（命令315秒），由完整验收执行器运行时，原双节点场景和新增清单场景共享900秒阶段保护；这些是 CI 总钟，明确的请求、故障、续期及查询功能期限和角色资源预算保留，缺场景不能以“无测试”通过。节点输入仅接受维护中的隔离双 Compose 模板，不接受生产主机。辅助 S3 使用固定 RustFS 测试镜像及一次性凭据，不代表已验收 Cloudflare IAM。
 
 容量关卡停止 B 的四个角色，由 A 承担新的业务 TLS 连接和真实 S3 归档/DuckDB 查询，记录每档并发、错误、延迟、吞吐、查询完成数及 Docker 资源。测量报告位于 `.work/system-acceptance/multinode/single-node-capacity.json`，明确为 `kind:fixture`，真实业务峰值未知；该报告不能用于生产资格。测试环境是同一个 Docker/Lima VM，包含本地 S3 和私网 HTTP 测试后端，其网络和硬件条件不同于 GCP/R2。报告的是这些条件下的实测值，不是生产容量承诺。节点级故障通过四个角色及网络的销毁/重建、保留卷和断开控制连接模拟；真实 GCP 内核重启、LB 数据路径、供应商权限及逐站 DNS 迁移仍须在后续明确授权的环境验收。
 

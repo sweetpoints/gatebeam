@@ -18,7 +18,6 @@ import (
 	"gatebeam/internal/platform/secrets"
 	"gatebeam/internal/platform/transaction"
 	"io"
-	"net/netip"
 	"os"
 )
 
@@ -110,15 +109,11 @@ func OperatorOperation(ctx context.Context, op, config, request string) (any, er
 		if c.Mode != "edge" || c.RuntimeProtocol != 1 {
 			return nil, ErrProcessCapability
 		}
-		a, e := netip.ParseAddrPort(c.ManagementAPIAddress)
+		primary, peer, additional, e := managementTargets(c)
 		if e != nil {
 			return nil, e
 		}
-		b, e := netip.ParseAddrPort(c.ManagementAPIPeerAddress)
-		if e != nil {
-			return nil, e
-		}
-		return nodeinfra.InitializeManagementState(c.ManagementAPIStateFile, a, b)
+		return nodeinfra.InitializeManagementState(c.ManagementAPIStateFile, primary, peer, additional...)
 	}
 	if op == "inspect-boot" {
 		if c.Mode != "edge" || c.RuntimeProtocol != 1 {

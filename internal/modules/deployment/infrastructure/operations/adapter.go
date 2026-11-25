@@ -26,7 +26,13 @@ type ImageApprover interface {
 // OperationObservationTimeout bounds observing an asynchronous upgrade operation.
 const OperationObservationTimeout = 6 * time.Minute
 
+type MembershipRetirement interface {
+	RetireNode(context.Context, upgrade.Step) error
+	VerifyRetiredNode(context.Context, upgrade.Step) error
+}
+
 type Adapter struct {
+	Retirement         MembershipRetirement
 	Plan               upgrade.Plan
 	Cloud              Cloud
 	Host               SSHHost
@@ -50,6 +56,17 @@ func (a *Adapter) step(id string) (upgrade.Step, error) {
 			}
 		}
 	}
+	for _, blocked := range a.Plan.Steps {
+		steps, err := upgrade.DrainRestoration(a.Plan, blocked.ID)
+		if err != nil {
+			continue
+		}
+		for _, step := range steps {
+			if step.ID == id {
+				return step, nil
+			}
+		}
+	}
 	return upgrade.Step{}, ErrOperation
 }
 func (a *Adapter) node(s upgrade.Step) (domain.NodeDeployment, error) {
@@ -68,6 +85,57 @@ func (a *Adapter) Observe(ctx context.Context, id string) (upgrade.NodeState, er
 	}
 	return upgrade.NodeState{}, ErrOperation
 }
+
+// checkRemainingCapacity counts only healthy survivors that are still serving
+// in both entry backends with their observed image set.
+func (a *Adapter) checkRemainingCapacity(ctx context.Context, s upgrade.Step) error {
+	survivors := make(map[domain.NodeRef]map[string]string, len(s.Targets))
+	healthy := make([]domain.NodeDeployment, 0, len(s.Targets))
+	for _, other := range s.Targets {
+		if other.Node == s.Node {
+			continue
+		}
+		state, err := a.Host.Observe(ctx, other)
+		if err != nil || !state.Ready || !state.ControlReady ||
+			a.Cloud.BackendHealthy(ctx, other, false) != nil || a.Cloud.BackendHealthy(ctx, other, true) != nil {
+			continue
+		}
+		survivors[other.Node] = state.Images
+		healthy = append(healthy, other)
+	}
+	if !upgrade.QualifiesRemainingCapacity(s.Capacity, survivors) {
+		return upgrade.ErrCapacity
+	}
+	return a.Cloud.CheckCapacity(ctx, healthy, s.Capacity)
+}
+
+// CheckBeforeStep runs before persisting an in-flight operation. A failed
+// read-only check leaves a paused step with no uncertain write to reconcile.
+func (a *Adapter) CheckBeforeStep(ctx context.Context, s upgrade.Step) error {
+	switch s.Kind {
+	case "update", "approve-images":
+		for _, planned := range a.Plan.Steps {
+			if planned.ID == s.ID {
+				return a.checkRemainingCapacity(ctx, s)
+			}
+		}
+		return nil // Compensation restores the target, even after evidence expiry.
+	case "management-remove", "public-remove", "private-remove", "drain", "host-stop", "retire-membership":
+		if s.Kind == "management-remove" && a.Cloud.CheckInventory(ctx, s.Targets) != nil {
+			return ErrOperation
+		}
+		if s.Kind == "retire-membership" {
+			target, err := a.node(s)
+			if err != nil || a.Cloud.VerifyMembership(ctx, target, false, false) != nil || a.Cloud.VerifyMembership(ctx, target, true, false) != nil {
+				return ErrOperation
+			}
+		}
+		return a.checkRemainingCapacity(ctx, s)
+	default:
+		return nil
+	}
+}
+
 func (a *Adapter) Apply(ctx context.Context, s upgrade.Step) (upgrade.OperationRef, error) {
 	expected, e := a.step(s.ID)
 	if e != nil || IntentDigest(expected) != IntentDigest(s) {
@@ -96,6 +164,14 @@ func (a *Adapter) Apply(ctx context.Context, s upgrade.Step) (upgrade.OperationR
 	case "compatibility":
 		if a.CheckCompatibility == nil || a.CheckCompatibility(ctx) != nil {
 			return upgrade.OperationRef{}, ErrOperation
+		}
+		return upgrade.OperationRef{StepID: s.ID, HostCommandID: s.ID}, nil
+	case "retire-membership":
+		if a.Retirement == nil {
+			return upgrade.OperationRef{}, ErrOperation
+		}
+		if err := a.Retirement.RetireNode(ctx, s); err != nil {
+			return upgrade.OperationRef{}, err
 		}
 		return upgrade.OperationRef{StepID: s.ID, HostCommandID: s.ID}, nil
 	case "approve-images":
@@ -127,6 +203,12 @@ func (a *Adapter) Wait(ctx context.Context, op upgrade.OperationRef) error {
 			return ErrOperation
 		}
 		return a.Approver.VerifyUpgradeImages(ctx, s)
+	}
+	if s.Kind == "retire-membership" {
+		if a.Retirement == nil || op.HostCommandID != s.ID || op.CloudOperation != "" {
+			return ErrOperation
+		}
+		return a.Retirement.VerifyRetiredNode(ctx, s)
 	}
 	ctx, cancel := context.WithTimeout(ctx, OperationObservationTimeout)
 	defer cancel()

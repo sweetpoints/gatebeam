@@ -23,7 +23,7 @@ const computeEndpoint = "https://compute.googleapis.com/compute/v1"
 var operationPath = regexp.MustCompile(`^projects/[a-z][a-z0-9-]{0,62}/(regions|zones)/[a-z0-9-]+/operations/[a-zA-Z0-9-]+$`)
 var backendPath = regexp.MustCompile(`^projects/[a-z][a-z0-9-]{0,62}/regions/[a-z0-9-]+/backendServices/[a-z][a-z0-9-]{0,62}$`)
 var groupPath = regexp.MustCompile(`^projects/[a-z][a-z0-9-]{0,62}/zones/[a-z0-9-]+/instanceGroups/[a-z][a-z0-9-]{0,62}$`)
-var stepID = regexp.MustCompile(`^[0-9a-f-]{36}-[0-9]{3}$`)
+var stepID = regexp.MustCompile(`^[0-9a-f-]{36}-[0-9]{3,4}$`)
 
 // RequestID uses Compute Engine's standard UUID requestId deduplication field.
 func RequestID(id string) string {
@@ -130,27 +130,22 @@ func (c Cloud) Mutate(ctx context.Context, s upgrade.Step, n domain.NodeDeployme
 		if c.request(ctx, "GET", path, nil, &current) != nil || current.Fingerprint == "" {
 			return op, ErrOperation
 		}
-		next := []map[string]any{}
-		found := 0
-		for _, b := range current.Backends {
-			group, _ := b["group"].(string)
-			if resourcePath(group) == n.InstanceGroup {
-				found++
-				if !minimalMember(b) {
-					return op, ErrOperation
-				}
-				if strings.HasSuffix(s.Kind, "-add") {
-					return op, ErrOperation
-				}
-				continue
-			}
-			next = append(next, b)
+		adding := strings.HasSuffix(s.Kind, "-add")
+		expectedAbsent := ""
+		if adding {
+			expectedAbsent = n.InstanceGroup
 		}
-		if strings.HasSuffix(s.Kind, "-remove") {
-			if found != 1 || len(next) == 0 {
-				return op, ErrOperation
+		if len(s.Targets) < 2 || !backendMembersMatch(current.Backends, s.Targets, expectedAbsent) {
+			return op, ErrOperation
+		}
+		next := make([]map[string]any, 0, len(s.Targets))
+		for _, member := range current.Backends {
+			group, _ := member["group"].(string)
+			if resourcePath(group) != n.InstanceGroup {
+				next = append(next, member)
 			}
-		} else {
+		}
+		if adding {
 			next = append(next, map[string]any{"group": "https://www.googleapis.com/compute/v1/" + n.InstanceGroup, "balancingMode": "CONNECTION"})
 		}
 		body = map[string]any{"fingerprint": current.Fingerprint, "backends": next}
@@ -230,10 +225,31 @@ func minimalMember(m map[string]any) bool {
 	return true
 }
 
+func backendMembersMatch(backends []map[string]any, nodes []domain.NodeDeployment, absent string) bool {
+	expected := make(map[string]bool, len(nodes))
+	for _, node := range nodes {
+		if node.InstanceGroup != absent {
+			expected[node.InstanceGroup] = true
+		}
+	}
+	if len(expected) != len(backends) {
+		return false
+	}
+	for _, member := range backends {
+		group, _ := member["group"].(string)
+		group = resourcePath(group)
+		if !expected[group] || !minimalMember(member) {
+			return false
+		}
+		delete(expected, group)
+	}
+	return true
+}
+
 // CheckInventory refuses proxy backends, foreign groups and custom membership
-// policies. Restoration is defined for two dedicated CONNECTION-mode groups.
+// policies. Each node is in its own dedicated CONNECTION-mode group.
 func (c Cloud) CheckInventory(ctx context.Context, nodes []domain.NodeDeployment) error {
-	if len(nodes) != 2 {
+	if domain.ValidateNodeInventory(nodes) != nil {
 		return ErrOperation
 	}
 	for _, entry := range []struct{ path, scheme string }{{nodes[0].PublicBackend, "EXTERNAL"}, {nodes[0].PrivateBackend, "INTERNAL"}} {
@@ -241,23 +257,8 @@ func (c Cloud) CheckInventory(ctx context.Context, nodes []domain.NodeDeployment
 			Protocol, LoadBalancingScheme string
 			Backends                      []map[string]any
 		}
-		if c.request(ctx, "GET", entry.path, nil, &v) != nil || v.Protocol != "TCP" || v.LoadBalancingScheme != entry.scheme || len(v.Backends) != 2 {
+		if c.request(ctx, "GET", entry.path, nil, &v) != nil || v.Protocol != "TCP" || v.LoadBalancingScheme != entry.scheme || !backendMembersMatch(v.Backends, nodes, "") {
 			return ErrOperation
-		}
-		for _, n := range nodes {
-			found := 0
-			for _, m := range v.Backends {
-				group, _ := m["group"].(string)
-				if resourcePath(group) == n.InstanceGroup {
-					found++
-					if !minimalMember(m) {
-						return ErrOperation
-					}
-				}
-			}
-			if found != 1 {
-				return ErrOperation
-			}
 		}
 	}
 	for _, n := range nodes {

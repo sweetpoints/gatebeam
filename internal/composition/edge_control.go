@@ -31,7 +31,6 @@ import (
 	"gatebeam/internal/platform/lifecycle"
 	"gatebeam/internal/platform/postgres"
 	"gatebeam/internal/platform/transaction"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"time"
@@ -56,27 +55,13 @@ func runEdgeControlMode(ctx context.Context, cfg bootstrap.Config, node domain.N
 	if cfg.EdgeRoot == "" || cfg.DatabaseFile == "" || cfg.ManagementDomain == "" || cfg.ManagementCertificateFile == "" || cfg.ManagementKeyFile == "" || cfg.ManagementTrustFile == "" {
 		return errors.New("edge bootstrap configuration incomplete")
 	}
-	api, e := netip.ParseAddrPort(cfg.ManagementAPIAddress)
-	if e != nil || !api.Addr().IsPrivate() || (api.Port() != 8080 && cfg.ManagementAPIPeerAddress == "") {
+	api, peer, additional, e := managementTargets(cfg)
+	if e != nil || (api.Port() != 8080 && cfg.ManagementAPIName == "") {
 		return errors.New("invalid private management API address")
 	}
-	protected := []netip.Prefix{netip.PrefixFrom(api.Addr(), api.Addr().BitLen())}
-	for _, raw := range []string{cfg.ManagementAPIPeerAddress, cfg.HealthListen} {
-		if raw == "" {
-			continue
-		}
-		address, e := netip.ParseAddrPort(raw)
-		if e != nil || (!address.Addr().IsPrivate() && !address.Addr().IsLoopback()) {
-			return errors.New("invalid protected control address")
-		}
-		protected = append(protected, netip.PrefixFrom(address.Addr(), address.Addr().BitLen()))
-	}
-	for _, v := range cfg.ProtectedNetworks {
-		p, e := netip.ParsePrefix(v)
-		if e != nil {
-			return errors.New("invalid protected network")
-		}
-		protected = append(protected, p)
+	protected, e := runtimeProtected(cfg)
+	if e != nil {
+		return e
 	}
 	if disk == nil && preview == nil {
 		disk, e = filesystem.New(cfg.EdgeRoot)
@@ -160,11 +145,9 @@ func runEdgeControlMode(ctx context.Context, cfg bootstrap.Config, node domain.N
 	coordinator.SetNodes(deployment.NewNodes())
 	bindings := deploymentpg.NewRuntime(pool, store, protected)
 	source := &runtimebootstrap.Source{ACMEWebRoot: cfg.ACMEWebRoot, ManagementACMEWebRoot: cfg.ManagementACMEWebRoot, ManagementACMEHost: cfg.ManagementAPIName, Bindings: bindings, Materials: certificatematerials.Adapter{Owner: materials, Offline: offline}, Cloudflare: bindings, Domain: cfg.ManagementDomain, CertificateFile: cfg.ManagementCertificateFile, KeyFile: cfg.ManagementKeyFile, TrustFile: cfg.ManagementTrustFile, APIAddress: api, LogDirectory: filepath.Join(cfg.EdgeRoot, "logs"), ProtectedNetworks: protected}
-	if cfg.ManagementAPIPeerAddress != "" {
-		source.PeerAPIAddress, e = netip.ParseAddrPort(cfg.ManagementAPIPeerAddress)
-		if e != nil || !source.PeerAPIAddress.Addr().IsPrivate() || source.PeerAPIAddress.Port() == 0 {
-			return errors.New("invalid peer management API address")
-		}
+	if peer.IsValid() || len(additional) > 0 || cfg.ManagementAPIName != "" {
+		source.PeerAPIAddress = peer
+		source.AdditionalAPIAddresses = additional
 		source.UpstreamName = cfg.ManagementAPIName
 		source.UpstreamTrustFile = cfg.ManagementAPITrustFile
 		source.UpstreamCertificateFile = cfg.ManagementAPIClientCertificateFile

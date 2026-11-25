@@ -16,17 +16,16 @@ import (
 	"time"
 )
 
-func activationProbes(ctx context.Context, pair []domain.NodeDeployment, client *http.Client) ([]nodes.ActivationProbe, error) {
-	if len(pair) != 2 || pair[0].Node.ID == pair[1].Node.ID || pair[0].PrivateAddress != pair[1].PeerAddress || pair[0].PeerAddress != pair[1].PrivateAddress {
-		return nil, errors.New("independent two-node cohort required")
+func activationProbes(ctx context.Context, inventory []domain.NodeDeployment, client *http.Client) ([]nodes.ActivationProbe, error) {
+	if err := domain.ValidateNodeInventory(inventory); err != nil {
+		return nil, err
 	}
-	for _, n := range pair {
-		if e := n.Validate(); e != nil {
-			return nil, e
-		}
+	if len(inventory) == 2 && (inventory[0].PeerAddress != "" && inventory[0].PeerAddress != inventory[1].PrivateAddress ||
+		inventory[1].PeerAddress != "" && inventory[1].PeerAddress != inventory[0].PrivateAddress) {
+		return nil, errors.New("legacy management peers do not match")
 	}
 	if client == nil {
-		for _, n := range pair {
+		for _, n := range inventory {
 			actual, e := (operations.SSHHost{}).Observe(ctx, n)
 			if e != nil || !actual.Ready || activationImages(n, actual.Images) != nil {
 				return nil, errors.New("actual host image or capability proof unavailable")
@@ -36,7 +35,7 @@ func activationProbes(ctx context.Context, pair []domain.NodeDeployment, client 
 	}
 	required := map[string][]string{"nginx": {lifecycle.Data}, "management": {lifecycle.Management}, "background-jobs": {lifecycle.GlobalJobs, lifecycle.LocalCleanup}, "log-query": {lifecycle.Query}}
 	out := []nodes.ActivationProbe{}
-	for _, n := range pair {
+	for _, n := range inventory {
 		proof := nodes.ActivationProbe{Node: n.Node, Images: map[string]string{}}
 		for _, role := range domain.NodeRoleNames() {
 			spec := n.Roles[role]

@@ -177,6 +177,32 @@ func (o *UpgradeOperations) waitManagementDigest(ctx context.Context, n *Node, d
 	}
 }
 
+func (o *UpgradeOperations) EnableNewManagementPeer(t testing.TB, original, peer *Node) {
+	t.Helper()
+	address := net.JoinHostPort(peer.Info.PrivateAddress, "9443")
+	for _, command := range []struct {
+		path string
+		body map[string]any
+	}{
+		{"/management-peers", map[string]any{"address": address}},
+		{"/management-upstreams", map[string]any{"address": address, "unavailable": false}},
+	} {
+		var ack struct {
+			Digest string `json:"desired_digest"`
+		}
+		raw := original.Control(t, "nginx", command.path, command.body)
+		if json.Unmarshal(raw, &ack) != nil || len(ack.Digest) != 64 {
+			t.Fatalf("missing topology confirmation for %s", command.path)
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), operations.OperationObservationTimeout)
+		_, _, err := o.waitManagementDigest(ctx, original, ack.Digest)
+		cancel()
+		if err != nil {
+			t.Fatalf("management topology not applied for %s: %v", command.path, err)
+		}
+	}
+}
+
 func (o *UpgradeOperations) Apply(ctx context.Context, s upgrade.Step) (upgrade.OperationRef, error) {
 	o.Calls = append(o.Calls, s)
 	op := upgrade.OperationRef{StepID: s.ID, HostCommandID: s.ID}
@@ -304,6 +330,13 @@ func (o *UpgradeOperations) Apply(ctx context.Context, s upgrade.Step) (upgrade.
 			}
 			time.Sleep(time.Until(deadline))
 		}
+	case "retire-membership":
+		if o.Public[s.Node.ID] || o.Private[s.Node.ID] {
+			return op, errors.New("fixture retirement before traffic removal")
+		}
+		if err := o.Store.RetireNode(ctx, s); err != nil {
+			return op, err
+		}
 	case "approve-images":
 		if e := o.Store.ApproveUpgradeImages(ctx, s); e != nil {
 			return op, e
@@ -416,6 +449,9 @@ func (o *UpgradeOperations) Wait(ctx context.Context, op upgrade.OperationRef) e
 	n := o.node(s.Node.ID)
 	if n == nil {
 		return errors.New("unknown fixture operation")
+	}
+	if s.Kind == "retire-membership" {
+		return o.Store.VerifyRetiredNode(ctx, s)
 	}
 	if s.Kind == "update" {
 		// Completion proves the container/config replacement, not application health.

@@ -6,6 +6,7 @@ import (
 	"gatebeam/internal/modules/deployment/application/upgrade"
 	"gatebeam/internal/modules/deployment/domain"
 	"gatebeam/internal/modules/deployment/infrastructure/postgres/dbgen"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"strings"
 )
@@ -19,9 +20,48 @@ func (s UpgradeStore) Create(ctx context.Context, r upgrade.Run) error {
 	if e != nil {
 		return e
 	}
-	_, e = s.Pool.Exec(ctx, `INSERT INTO deployment_upgrade_runs(id,revision,owner_instance,state,document) VALUES($1,$2,$3,$4,$5)`, r.Plan.ID, r.Revision, r.Owner, r.State, b)
+	tx, e := s.Pool.Begin(ctx)
+	if e != nil {
+		return e
+	}
+	defer tx.Rollback(ctx)
+	q := dbgen.New(tx)
+	if e = nodeGuard(ctx, q); e != nil {
+		return e
+	}
+	if len(r.Plan.Inventory.Nodes) > 0 {
+		if e = checkUpgradeMembers(ctx, q, r.Plan.Inventory.Nodes); e != nil {
+			return e
+		}
+	}
+	_, e = tx.Exec(ctx, `INSERT INTO deployment_upgrade_runs(id,revision,owner_instance,state,document) VALUES($1,$2,$3,$4,$5)`, r.Plan.ID, r.Revision, r.Owner, r.State, b)
 	if e != nil {
 		return upgrade.ErrConflict
+	}
+	return tx.Commit(ctx)
+}
+
+func (s UpgradeStore) CheckMembers(ctx context.Context, inventory []domain.NodeDeployment) error {
+	return checkUpgradeMembers(ctx, dbgen.New(s.Pool), inventory)
+}
+
+func checkUpgradeMembers(ctx context.Context, q *dbgen.Queries, inventory []domain.NodeDeployment) error {
+	rows, err := q.EnabledNodeTargets(ctx)
+	if err != nil {
+		return err
+	}
+	if len(rows) != len(inventory) {
+		return upgrade.ErrConflict
+	}
+	expected := make(map[domain.NodeRef]bool, len(inventory))
+	for _, node := range inventory {
+		expected[node.Node] = true
+	}
+	for _, row := range rows {
+		ref := domain.NodeRef{ID: uuid.UUID(row.ID.Bytes).String(), Epoch: uint64(row.Epoch)}
+		if row.State != "active" || !expected[ref] {
+			return upgrade.ErrConflict
+		}
 	}
 	return nil
 }
@@ -54,7 +94,7 @@ func (s UpgradeStore) Save(ctx context.Context, r upgrade.Run, previous uint64) 
 // ApproveUpgradeImages binds a protected registry image-policy update to the
 // exact persisted in-flight step. An ordinary same-epoch registration stays immutable.
 func (s UpgradeStore) ApproveUpgradeImages(ctx context.Context, step upgrade.Step) error {
-	if len(step.ID) != 40 || step.Kind != "approve-images" || len(step.Images) == 0 {
+	if (len(step.ID) != 40 && len(step.ID) != 41) || step.Kind != "approve-images" || len(step.Images) == 0 {
 		return upgrade.ErrInvalid
 	}
 	tx, e := s.Pool.Begin(ctx)
@@ -123,7 +163,7 @@ func (s UpgradeStore) ApproveUpgradeImages(ctx context.Context, step upgrade.Ste
 }
 
 func (s UpgradeStore) VerifyUpgradeImages(ctx context.Context, step upgrade.Step) error {
-	if len(step.ID) != 40 || step.Kind != "approve-images" {
+	if (len(step.ID) != 40 && len(step.ID) != 41) || step.Kind != "approve-images" {
 		return upgrade.ErrInvalid
 	}
 	var raw, registration []byte
@@ -154,4 +194,60 @@ func (s UpgradeStore) VerifyUpgradeImages(ctx context.Context, step upgrade.Step
 		}
 	}
 	return nil
+}
+
+// RetireNode closes the membership only for the persisted final retirement
+// step. The executor completes management exclusion, LB removal and drain first.
+func (s UpgradeStore) RetireNode(ctx context.Context, step upgrade.Step) error {
+	if len(step.ID) != 40 || step.Kind != "retire-membership" || len(step.Targets) < 2 {
+		return upgrade.ErrInvalid
+	}
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	q := dbgen.New(tx)
+	if err := nodeManager(ctx, q); err != nil {
+		return err
+	}
+	var raw []byte
+	var state string
+	if err := tx.QueryRow(ctx, `SELECT document,state FROM deployment_upgrade_runs WHERE id=$1 FOR UPDATE`, step.ID[:36]).Scan(&raw, &state); err != nil {
+		return upgrade.ErrConflict
+	}
+	var run upgrade.Run
+	if state != "running" || json.Unmarshal(raw, &run) != nil ||
+		run.Plan.Scope != "retire" || run.Plan.Request.Target == nil || *run.Plan.Request.Target != step.Node ||
+		run.Pending == nil || run.Next != len(run.Plan.Steps)-1 {
+		return upgrade.ErrConflict
+	}
+	want, _ := json.Marshal(run.Pending)
+	proposed, _ := json.Marshal(step)
+	if !jsonSame(want, proposed) {
+		return upgrade.ErrConflict
+	}
+	if err := checkUpgradeMembers(ctx, q, step.Targets); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `UPDATE deployment_nodes SET state='revoked',enabled=false WHERE id=$1 AND epoch=$2 AND enabled AND state='active'`, step.Node.ID, step.Node.Epoch)
+	if err != nil || tag.RowsAffected() != 1 {
+		return upgrade.ErrConflict
+	}
+	return tx.Commit(ctx)
+}
+
+func (s UpgradeStore) VerifyRetiredNode(ctx context.Context, step upgrade.Step) error {
+	q := dbgen.New(s.Pool)
+	row, err := q.RegisteredNode(ctx, id(step.Node.ID))
+	if err != nil || row.Epoch != int64(step.Node.Epoch) || row.State != "revoked" || row.Enabled {
+		return upgrade.ErrConflict
+	}
+	survivors := make([]domain.NodeDeployment, 0, len(step.Targets))
+	for _, node := range step.Targets {
+		if node.Node != step.Node {
+			survivors = append(survivors, node)
+		}
+	}
+	return checkUpgradeMembers(ctx, q, survivors)
 }

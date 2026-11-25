@@ -5,8 +5,10 @@ package postgres_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"gatebeam/internal/modules/deployment/application/nodes"
+	"gatebeam/internal/modules/deployment/application/upgrade"
 	"gatebeam/internal/modules/deployment/domain"
 	"gatebeam/internal/modules/deployment/infrastructure/identifiers"
 	dep "gatebeam/internal/modules/deployment/infrastructure/postgres"
@@ -17,6 +19,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"slices"
+
 	"strings"
 	"testing"
 	"time"
@@ -231,4 +235,142 @@ func TestNodeIdentityLegacyOriginCannotBeCopiedToSecondNode(t *testing.T) {
 	if err := p.QueryRow(t.Context(), `SELECT count(*) FROM deployment_node_runtime`).Scan(&count); err != nil || count != 1 {
 		t.Fatal("legacy proof fabricated multiple serving nodes", err)
 	}
+}
+
+func TestPublicationTargetsFollowExplicitMembership(t *testing.T) {
+	pool := testkit.Postgres(t)
+	owner := nodes.New(dep.New(), time.Now)
+	owner.SetAudit(audit.New(), identifiers.Generator{})
+	runner := postgres.NewRunner(pool)
+	var refs []domain.NodeRef
+	var schema string
+	if err := pool.QueryRow(t.Context(), "SELECT current_schema()").Scan(&schema); err != nil {
+		t.Fatal(err)
+	}
+	images := map[string]string{}
+	protocols := map[string]uint32{}
+	for _, role := range domain.NodeRoleNames() {
+		images[role] = "sha256:" + strings.Repeat("a", 64)
+		protocols[role] = 1
+	}
+	for i := range 3 {
+		ref := domain.NodeRef{ID: uuid.NewString(), Epoch: 1}
+		principal := fmt.Sprintf("%s_inventory_%d", schema, i)
+		quoted := pgx.Identifier{principal}.Sanitize()
+		if _, err := pool.Exec(t.Context(), "CREATE ROLE "+quoted+" LOGIN"); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _, _ = pool.Exec(context.Background(), "DROP ROLE "+quoted) })
+		registration := nodes.NodeRegistration{
+			Node: ref, Principal: principal, RuntimeProtocol: 1, BootFormat: domain.BootFormat,
+			BootArtifactID: strings.Repeat("b", 64), BridgeImages: images, RoleProtocols: protocols,
+		}
+		if err := runner.Within(t.Context(), func(sc transaction.Scope) error {
+			_, err := owner.RegisterWithin(sc, registration)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		refs = append(refs, ref)
+	}
+	var firstRelease string
+	for _, count := range []int{1, 3, 1} {
+		releaseID := uuid.NewString()
+		if _, err := pool.Exec(t.Context(), `WITH candidate AS (INSERT INTO deployment_candidates(id,body,input_digest) VALUES($1,'{}',repeat('a',64)) RETURNING id) INSERT INTO deployment_releases(id) SELECT id FROM candidate`, releaseID); err != nil {
+			t.Fatal(err)
+		}
+		if err := runner.Within(t.Context(), func(sc transaction.Scope) error {
+			if err := owner.ActivateWithin(sc, refs[:count]); err != nil {
+				return err
+			}
+			targets, err := owner.SetDesiredWithin(sc, releaseID)
+			if err != nil {
+				return err
+			}
+			if len(targets) != count {
+				return fmt.Errorf("got %d publication targets, want %d", len(targets), count)
+			}
+			for _, ref := range refs[:count] {
+				if !slices.Contains(targets, ref) {
+					return fmt.Errorf("publication omitted %v", ref)
+				}
+			}
+			if firstRelease != "" {
+				summary, err := owner.SummaryWithin(sc, firstRelease)
+				if err != nil {
+					return err
+				}
+				if summary.Expected != 1 {
+					return fmt.Errorf("membership edit changed earlier publication: %+v", summary)
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("publish with %d active nodes: %v", count, err)
+		}
+		if firstRelease == "" {
+			firstRelease = releaseID
+		}
+	}
+	store := dep.UpgradeStore{Pool: pool}
+	run := upgrade.Run{
+		Plan:  upgrade.Plan{ID: uuid.NewString(), Inventory: upgrade.Inventory{Nodes: []domain.NodeDeployment{{Node: refs[1]}}}},
+		Owner: "owned", Revision: 1, State: "running",
+	}
+	if err := store.Create(t.Context(), run); !errors.Is(err, upgrade.ErrConflict) {
+		t.Fatalf("an upgrade with stale membership was created: %v", err)
+	}
+	run.Plan.Inventory.Nodes[0].Node = refs[0]
+	if err := store.Create(t.Context(), run); err != nil {
+		t.Fatal(err)
+	}
+	err := runner.Within(t.Context(), func(sc transaction.Scope) error { return owner.ActivateWithin(sc, refs) })
+	if !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("activation changed membership during an upgrade: %v", err)
+	}
+
+	run.Revision, run.State = 2, "completed"
+	if err := store.Save(t.Context(), run, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.Within(t.Context(), func(sc transaction.Scope) error { return owner.ActivateWithin(sc, refs) }); err != nil {
+		t.Fatal(err)
+	}
+	targets := []domain.NodeDeployment{{Node: refs[0]}, {Node: refs[1]}, {Node: refs[2]}}
+	batchID := uuid.NewString()
+	step := upgrade.Step{ID: batchID + "-007", Kind: "retire-membership", Node: refs[2], Targets: targets}
+	batch := upgrade.Run{
+		Plan: upgrade.Plan{ID: batchID, Scope: "retire", Inventory: upgrade.Inventory{Nodes: targets},
+			Request: upgrade.Request{Target: &refs[2]}, Steps: []upgrade.Step{{Kind: "log-flush"}, step}},
+		Owner: "owned", Revision: 1, State: "running",
+	}
+	if err := store.Create(t.Context(), batch); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RetireNode(t.Context(), step); !errors.Is(err, upgrade.ErrConflict) {
+		t.Fatalf("retirement was possible before a persisted final step: %v", err)
+	}
+	batch.Next, batch.Pending, batch.Revision = 1, &step, 2
+	if err := store.Save(t.Context(), batch, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RetireNode(t.Context(), step); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.VerifyRetiredNode(t.Context(), step); err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.Within(t.Context(), func(sc transaction.Scope) error {
+		active, err := owner.TargetsWithin(sc)
+		if err != nil {
+			return err
+		}
+		if len(active) != 2 || !slices.Contains(active, refs[0]) || !slices.Contains(active, refs[1]) {
+			return fmt.Errorf("retirement changed an unrelated node: %v", active)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
 }

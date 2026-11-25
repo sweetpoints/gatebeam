@@ -317,7 +317,22 @@ func (l *Lab) Activate(t testing.TB) {
 		t.Fatal(e)
 	}
 }
-func Start(t testing.TB) *Lab {
+func Start(t testing.TB) *Lab { return startNodes(t, 2, nil) }
+
+func StartSingle(t testing.TB) *Lab { return startNodes(t, 1, nil) }
+
+func StartThree(t testing.TB) *Lab { return startNodes(t, 3, nil) }
+
+// StartWithTemporaryNode starts the second declared node after first serving
+// traffic on the original node and verifying its single-node publication.
+func StartWithTemporaryNode(t testing.TB) *Lab {
+	return startNodes(t, 2, func(lab *Lab) {
+		lab.Activate(t)
+		lab.Business(t)
+	})
+}
+
+func startNodes(t testing.TB, count int, firstReady func(*Lab)) *Lab {
 	t.Helper()
 	validateInputs(t)
 	probe := os.Getenv("GATEBEAM_COMPOSE_PROBE_BINARY")
@@ -408,9 +423,12 @@ func Start(t testing.TB) *Lab {
 	}
 	mgmtCert, mgmtKey := pair("management.dual.test", pkidomain.ServerAuth)
 	policies := secrets.RolePolicy{}
-	keys := []map[string]string{{}, {}}
-	own := []map[string]string{{}, {}}
-	for i := 0; i < 2; i++ {
+	keys := make([]map[string]string, count)
+	own := make([]map[string]string, count)
+	clientNames := make([]string, count)
+	for i := range count {
+		keys[i], own[i] = map[string]string{}, map[string]string{}
+		clientNames[i] = fmt.Sprintf("gateway-%c.dual.test", 'a'+i)
 		for _, role := range []string{"api", "provider", "notification", "leaf"} {
 			path := filepath.Join(root, fmt.Sprintf("%d-%s.agekey", i, role))
 			if e = secrets.EnsureIdentity(path); e != nil {
@@ -439,13 +457,13 @@ func Start(t testing.TB) *Lab {
 	}
 	online = filepath.Join(caRoot, "online")
 	caCert, caKey := pair("ca.dual.test", pkidomain.ServerAuth)
-	lab.startCA(t, caRoot, caCert, caKey)
+	lab.startCA(t, caRoot, caCert, caKey, clientNames)
 	images := map[string]string{}
 	for role, mode := range Modes {
 		images[role] = prepareDocker(t, "image", "inspect", "gatebeam-"+mode+":local", "--format", "{{.Id}}")
 	}
-	for i := 0; i < 2; i++ {
-		label := []string{"a", "b"}[i]
+	for i := range count {
+		label := string(rune('a' + i))
 		name := run + "-" + label
 		dir := filepath.Join(root, label)
 		if e = os.Mkdir(dir, 0700); e != nil {
@@ -453,11 +471,14 @@ func Start(t testing.TB) *Lab {
 		}
 		// Owned lab bridges must not overlap Docker's automatic 172/192 pools:
 		// an earlier or concurrent fixture may legitimately occupy those pools.
-		mainBase := []string{"10.254.249.", "10.254.251."}[i]
-		queryBase := []string{"10.254.250.", "10.254.252."}[i]
+		mainBase := []string{"10.254.249.", "10.254.251.", "10.254.246."}[i]
+		queryBase := []string{"10.254.250.", "10.254.252.", "10.254.247."}[i]
 		vm := fmt.Sprintf("10.254.248.%d", 20+i)
-		peer := fmt.Sprintf("10.254.248.%d", 21-i)
-		node := &Node{Info: domain.NodeDeployment{Node: domain.NodeRef{ID: []string{"11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"}[i], Epoch: 1}, PrivateAddress: vm, PeerAddress: peer, StoragePrefix: name, Instance: "projects/owned/zones/us-west1-c/instances/" + name, InstanceGroup: "projects/owned/zones/us-west1-c/instanceGroups/" + name, PublicBackend: "projects/owned/regions/us-west1/backendServices/entry", PrivateBackend: "projects/owned/regions/us-west1/backendServices/ca", ComposeFile: filepath.Join(dir, "compose.yaml"), EnvironmentFile: filepath.Join(dir, "node.env"), Roles: map[string]domain.RoleDeployment{}}, ComposeFile: filepath.Join(dir, "compose.yaml"), Router: name + "-router", Secrets: map[string]string{}, Configs: map[string]bootstrap.Config{}}
+		peer := ""
+		if count == 2 && (firstReady == nil || i != 0) {
+			peer = fmt.Sprintf("10.254.248.%d", 21-i)
+		}
+		node := &Node{Info: domain.NodeDeployment{Node: domain.NodeRef{ID: []string{"11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222", "33333333-3333-4333-8333-333333333333"}[i], Epoch: 1}, PrivateAddress: vm, PeerAddress: peer, StoragePrefix: name, Instance: "projects/owned/zones/us-west1-c/instances/" + name, InstanceGroup: "projects/owned/zones/us-west1-c/instanceGroups/" + name, PublicBackend: "projects/owned/regions/us-west1/backendServices/entry", PrivateBackend: "projects/owned/regions/us-west1/backendServices/ca", ComposeFile: filepath.Join(dir, "compose.yaml"), EnvironmentFile: filepath.Join(dir, "node.env"), Roles: map[string]domain.RoleDeployment{}}, ComposeFile: filepath.Join(dir, "compose.yaml"), Router: name + "-router", Secrets: map[string]string{}, Configs: map[string]bootstrap.Config{}}
 		lab.Nodes = append(lab.Nodes, node)
 		logins := rolefixture.RuntimeRoles(t, pool, stopConsumers)
 		for _, login := range logins {
@@ -548,7 +569,9 @@ func Start(t testing.TB) *Lab {
 		edge.ManagementKeyFile = "/run/gatebeam/management.key"
 		edge.ManagementTrustFile = "/run/gatebeam/roots.pem"
 		edge.ManagementAPIAddress = vm + ":9443"
-		edge.ManagementAPIPeerAddress = peer + ":9443"
+		if peer != "" {
+			edge.ManagementAPIPeerAddress = peer + ":9443"
+		}
 		edge.ManagementAPIName = "management-api.dual.test"
 		edge.ManagementAPITrustFile = "/run/gatebeam/roots.pem"
 		edge.ManagementAPIClientCertificateFile = "/run/gatebeam/api-client.pem"
@@ -556,9 +579,25 @@ func Start(t testing.TB) *Lab {
 		edge.ManagementAPIStateFile = "/run/control/management-upstreams.json"
 		edge.ACMEWebRoot = "/var/lib/gatebeam/acme"
 		edge.ManagementACMEWebRoot = "/var/lib/gatebeam/management-acme"
-		edge.ProtectedNetworks = []string{vm + "/32", peer + "/32", dbIP + "/32"}
+		edge.ProtectedNetworks = []string{vm + "/32", dbIP + "/32"}
+		if firstReady != nil {
+			edge.ProtectedNetworks = append(edge.ProtectedNetworks, "10.254.248.0/27")
+		}
+		for other := range count {
+			if i == other {
+				continue
+			}
+			address := fmt.Sprintf("10.254.248.%d", 20+other)
+			edge.ProtectedNetworks = append(edge.ProtectedNetworks, address+"/32")
+			if count > 2 {
+				edge.ManagementAPIAdditionalAddresses = append(edge.ManagementAPIAdditionalAddresses, address+":9443")
+			}
+		}
 		node.Configs["nginx"] = edge
 		api := common("management")
+		if firstReady != nil {
+			api.ProtectedNetworks = []string{"10.254.248.0/27"}
+		}
 		api.CertificateStatusTrustFile = "/run/gatebeam/ca-status-trust.pem"
 		api.CertificateStatusProfilesFile = "/run/gatebeam/ca-status-profiles.json"
 		api.DatabaseFile = "/run/gatebeam/database"
@@ -575,7 +614,7 @@ func Start(t testing.TB) *Lab {
 		api.APITLSTrustFile = "/run/gatebeam/api-client-trust.pem"
 		api.APITLSCRLFile = "/run/gatebeam/api-client.crl"
 		api.APITLSStateFile = "/var/lib/gatebeam/capsules/api/tls-status.json"
-		api.APITLSClientNames = []string{"gateway-a.dual.test", "gateway-b.dual.test"}
+		api.APITLSClientNames = clientNames
 		api.CertificateRecipient = own[i]["leaf"]
 		api.CertificateProviderRecipient = own[i]["provider"]
 		api.NotificationRecipient = own[i]["notification"]
@@ -583,9 +622,12 @@ func Start(t testing.TB) *Lab {
 		api.CAStatusOrigin = caStatusOrigin
 		api.CertificateACMETransportTrustFile = "/run/gatebeam/roots.pem"
 		api.CAServerNames = []string{"service.dual.test", "management-api.dual.test", "ca.dual.test"}
-		api.CAClientNames = []string{"gateway-a.dual.test", "gateway-b.dual.test"}
+		api.CAClientNames = clientNames
 		node.Configs["management"] = api
 		worker := common("background-jobs")
+		if firstReady != nil {
+			worker.ProtectedNetworks = []string{"10.254.248.0/27"}
+		}
 		worker.DatabaseFile = "/run/gatebeam/database"
 		worker.ManagementAPIAddress = vm + ":9443"
 		worker.CertificateProviderIdentityFile = "/run/gatebeam/provider.agekey"
@@ -743,8 +785,14 @@ func Start(t testing.TB) *Lab {
 		node.APIClient = fixtureTLSClient(rootPool, "management-api.dual.test", node.Port(t, 9443), &pair)
 		node.CAAddress = lab.CAAddress
 		node.CAClient = fixtureTLSClient(rootPool, "ca.dual.test", lab.CAAddress, nil)
+		if i == 0 && firstReady != nil {
+			firstReady(lab)
+		}
 	}
 	lab.Activate(t)
+	if firstReady != nil {
+		lab.Business(t).RefreshClient(t, lab.Nodes[1])
+	}
 	verifyRoleBudgets(t, lab)
 	return lab
 }
